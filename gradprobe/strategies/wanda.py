@@ -289,22 +289,36 @@ class WANDAPruning(PruningStrategy):
         samples = []
 
         for name, param in param_list:
-            if name in activation_norms:
-                act_norm = activation_norms[name].to(param.device)
-                if len(param.shape) == 2:
-                    act_norm_expanded = act_norm.unsqueeze(0)
-                    importance = param.data.abs() * act_norm_expanded
-                else:
-                    importance = param.data.abs()
-                importance_flat = importance.cpu().flatten()
-            else:
-                importance_flat = param.data.abs().cpu().flatten()
+            # Sample indices BEFORE computing importance to save memory
+            n_samples = int(param.numel() * sample_ratio)
+            if n_samples == 0:
+                continue
 
-            # Sample from this parameter
-            n_samples = int(len(importance_flat) * sample_ratio)
-            if n_samples > 0:
-                indices = torch.randperm(len(importance_flat))[:n_samples]
-                samples.append(importance_flat[indices])
+            # Get random sample of indices from flattened param
+            indices = torch.randperm(param.numel(), device='cpu')[:n_samples]
+
+            # Compute importance only for sampled weights
+            if name in activation_norms:
+                act_norm = activation_norms[name]
+                if len(param.shape) == 2:
+                    # For 2D: importance[i,j] = |W[i,j]| * ||X[j]||
+                    # Sample specific [i,j] positions
+                    out_features, in_features = param.shape
+                    row_indices = indices // in_features
+                    col_indices = indices % in_features
+
+                    # Get sampled weights and corresponding activation norms
+                    sampled_weights = param.data.flatten()[indices].abs().cpu()
+                    sampled_act_norms = act_norm[col_indices].cpu()
+                    importance_samples = sampled_weights * sampled_act_norms
+                else:
+                    # For other shapes, just use magnitude
+                    importance_samples = param.data.flatten()[indices].abs().cpu()
+            else:
+                # No activation data, use magnitude only
+                importance_samples = param.data.flatten()[indices].abs().cpu()
+
+            samples.append(importance_samples)
 
         # Estimate threshold from samples
         all_samples = torch.cat(samples)
