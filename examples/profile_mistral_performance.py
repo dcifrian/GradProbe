@@ -187,8 +187,14 @@ print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 print(f"RAM: {profiler.get_ram_usage_mb():.2f} MB")
 print(f"VRAM: {profiler.get_vram_usage_mb():.2f} MB")
 
-# Prepare calibration data
-CALIBRATION_TEXT = """The quick brown fox jumps over the lazy dog. Machine learning has revolutionized how we interact with computers. These models learn patterns from vast amounts of text data. The transformer architecture marked a significant breakthrough in natural language processing. Climate change represents one of the most pressing challenges facing humanity."""
+# Prepare calibration data - need long enough text for multiple sequences
+CALIBRATION_TEXT = """The quick brown fox jumps over the lazy dog. Machine learning has revolutionized how we interact with computers. These models learn patterns from vast amounts of text data. The transformer architecture marked a significant breakthrough in natural language processing. Climate change represents one of the most pressing challenges facing humanity.
+
+The history of computing dates back to ancient times when humans first created tools for calculation. The abacus was invented thousands of years ago. In the 19th century, Charles Babbage designed the Analytical Engine, a mechanical general-purpose computer. Although never completed in his lifetime, Babbage's designs laid the groundwork for modern computers.
+
+Throughout history, explorers have ventured into the unknown, driven by curiosity and the desire to discover new lands and cultures. From ancient Polynesian navigators crossing vast oceans to modern astronauts venturing into space, the spirit of exploration has been a defining characteristic of human civilization.
+
+Mathematics is often called the language of the universe. From the elegant simplicity of Euclidean geometry to the abstract complexities of modern algebra and topology, mathematics provides tools for understanding patterns, structures, and relationships in both the natural and abstract worlds."""
 
 print(f"\nPreparing calibration data...")
 start = time.time()
@@ -209,6 +215,16 @@ for i in range(0, min(tokens.shape[1] - SEQ_LENGTH - 1, NUM_SEQUENCES * stride),
         target_sequences.append(target_seq)
         if len(input_sequences) >= NUM_SEQUENCES:
             break
+
+if len(input_sequences) == 0:
+    print(f"\n⚠ Warning: Text too short for {NUM_SEQUENCES} sequences of length {SEQ_LENGTH}")
+    print(f"Creating single sequence from available text...")
+    # Pad if necessary
+    if tokens.shape[1] < SEQ_LENGTH + 1:
+        padding_needed = SEQ_LENGTH + 1 - tokens.shape[1]
+        tokens = torch.cat([tokens, tokens[:, :padding_needed]], dim=1)
+    input_sequences = [tokens[:, :SEQ_LENGTH]]
+    target_sequences = [tokens[:, 1:SEQ_LENGTH+1]]
 
 print(f"Created {len(input_sequences)} sequences")
 

@@ -84,6 +84,13 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
+# Enable gradient checkpointing to avoid OOM during profiling
+if hasattr(model, 'gradient_checkpointing_enable'):
+    model.gradient_checkpointing_enable()
+    if hasattr(model, 'config'):
+        model.config.use_cache = False
+    print("Gradient checkpointing enabled to avoid OOM during profiling")
+
 load_time = time.time() - start
 ram, vram, vram_res, vram_total = get_memory_info()
 
@@ -151,44 +158,13 @@ if DEVICE == "cuda":
     _, gpu_util = profile_gpu_utilization() if profile_gpu_utilization()[0] else (False, 0)
     print(f"  GPU utilization: {gpu_util}%")
 
-# Test 2: With gradient checkpointing
+# Test 2: Note about gradient checkpointing
 print("\n" + "="*80)
-print("TEST 2: WITH GRADIENT CHECKPOINTING")
+print("TEST 2: GRADIENT CHECKPOINTING")
 print("="*80)
-
-if hasattr(model, 'gradient_checkpointing_enable'):
-    model.gradient_checkpointing_enable()
-    if hasattr(model, 'config'):
-        model.config.use_cache = False
-    print("✓ Gradient checkpointing enabled")
-
-    torch.cuda.empty_cache() if torch.cuda.is_available() else None
-
-    start = time.time()
-    ram_before, vram_before, _, _ = get_memory_info()
-
-    for inputs_batch, targets_batch in dataloader:
-        inputs_batch = inputs_batch.to(DEVICE)
-        targets_batch = targets_batch.to(DEVICE)
-
-        model.zero_grad()
-        outputs = model(inputs_batch)
-        loss = loss_fn(outputs, targets_batch)
-        loss.backward()
-        break
-
-    checkpointing_time = time.time() - start
-    ram_after, vram_after, _, _ = get_memory_info()
-
-    print(f"\n✓ Forward + Backward (checkpointed): {checkpointing_time:.3f}s")
-    print(f"  RAM delta: {ram_after - ram_before:.2f} GB")
-    if DEVICE == "cuda":
-        print(f"  VRAM delta: {vram_after - vram_before:.2f} GB")
-
-    slowdown = (checkpointing_time / forward_backward_time - 1) * 100
-    print(f"\n  Checkpointing slowdown: {slowdown:+.1f}%")
-else:
-    print("✗ Model does not support gradient checkpointing")
+print("Note: Gradient checkpointing is already enabled to prevent OOM.")
+print("The baseline forward/backward test above was performed WITH checkpointing.")
+print("\nTo test WITHOUT checkpointing, you would need more VRAM.")
 
 # Test 3: Layer-by-layer processing
 print("\n" + "="*80)
@@ -258,20 +234,19 @@ if DEVICE == "cuda":
 
     print(f"\n💡 VRAM Headroom: {vram_available:.1f} GB available")
 
-    if vram_available > 10:
-        print("\n✅ RECOMMENDATION: Disable gradient checkpointing")
-        print("   You have plenty of VRAM available. Gradient checkpointing is slowing you down.")
-        print("   Change: use_gradient_checkpointing=False")
-        print(f"   Expected speedup: ~{slowdown:.0f}% faster")
-
-    if vram_available > 15:
-        print("\n✅ RECOMMENDATION: Consider processing multiple layers in parallel")
-        print("   You have significant VRAM headroom. Could process 2-4 layers simultaneously.")
-        print("   This would require code changes to batch layer processing.")
-
-    if vram/vram_total < 0.5:
-        print("\n✅ RECOMMENDATION: You could use full fp32 instead of fp16")
-        print("   Your VRAM usage is low enough for full precision.")
+    if vram_available < 3:
+        print("\n⚠ LOW VRAM HEADROOM")
+        print("   Gradient checkpointing is necessary to avoid OOM.")
+        print("   Keep: use_gradient_checkpointing=True")
+    elif vram_available < 8:
+        print("\n✓ MODERATE VRAM HEADROOM")
+        print("   Gradient checkpointing recommended for safety.")
+        print("   You could try disabling it if you monitor VRAM carefully.")
+    else:
+        print("\n✅ GOOD VRAM HEADROOM")
+        print("   You could try disabling gradient checkpointing for better performance.")
+        print("   Set: use_gradient_checkpointing=False")
+        print("   Monitor VRAM usage carefully - may still OOM depending on batch size.")
 
 # GPU utilization analysis
 can_monitor, current_util = profile_gpu_utilization()
