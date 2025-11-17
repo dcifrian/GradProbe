@@ -65,15 +65,26 @@ class MagnitudePruning(PruningStrategy):
                 masks[full_name] = torch.zeros(param.shape, dtype=torch.bool, device='cpu')
             return masks
 
+        # Move model to CPU temporarily to avoid CUDA OOM
+        # PyTorch's pruning creates _orig and _mask buffers which would double VRAM usage
+        original_device = {}
+        for module, param_name in parameters_to_prune:
+            param = getattr(module, param_name)
+            original_device[(module, param_name)] = param.device
+            if param.device.type == 'cuda':
+                # Move parameter to CPU
+                param.data = param.data.cpu()
+
         # Use PyTorch's global_unstructured which is memory-efficient
         # It computes the threshold without concatenating all weights
+        # This now operates on CPU to avoid CUDA OOM
         prune.global_unstructured(
             parameters_to_prune,
             pruning_method=prune.L1Unstructured,
             amount=sparsity,
         )
 
-        # Extract the masks that were created
+        # Extract the masks that were created (already on CPU)
         masks = {}
         for full_name, (module, param_name) in param_name_to_module.items():
             # PyTorch creates a mask attribute named {param_name}_mask
@@ -83,8 +94,7 @@ class MagnitudePruning(PruningStrategy):
                 pytorch_mask = getattr(module, mask_name)
                 # Invert it for our convention (True = prune)
                 our_mask = ~pytorch_mask
-                # Move to CPU to save VRAM
-                masks[full_name] = our_mask.cpu()
+                masks[full_name] = our_mask
             else:
                 # Fallback if no mask was created
                 param = getattr(module, param_name)
@@ -93,6 +103,11 @@ class MagnitudePruning(PruningStrategy):
         # Clean up: remove the pruning hooks and masks to restore original state
         for module, param_name in parameters_to_prune:
             prune.remove(module, param_name)
+            # Move parameter back to original device
+            param = getattr(module, param_name)
+            original_dev = original_device[(module, param_name)]
+            if original_dev.type == 'cuda':
+                param.data = param.data.to(original_dev)
 
         # Also include non-prunable parameters with zero masks
         for name, param in model.named_parameters():
