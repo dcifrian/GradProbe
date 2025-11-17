@@ -196,7 +196,7 @@ print_gpu_memory("After WANDA strategy creation")
 
 # Create pruner with low_memory_mode
 print(f"\nInitializing GradProbe pruner...")
-pruner = GradProbe(model, wanda_strategy, device=DEVICE, low_memory_mode=LOW_MEMORY_MODE)
+pruner = GradProbe(model, wanda_strategy, device=DEVICE, low_memory_mode=LOW_MEMORY_MODE, use_fp16=True,use_gradient_checkpointing=True)
 print_gpu_memory("After pruner creation")
 
 # Run pruning

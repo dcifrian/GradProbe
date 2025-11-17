@@ -159,7 +159,7 @@ print("\n" + "="*70)
 print("TEST 1: Regular Iterative Pruning")
 print("="*70)
 model.load_state_dict(saved_state)
-pruner = GradProbe(model, MagnitudePruning())
+pruner = GradProbe(model, MagnitudePruning(),use_fp16=True,use_gradient_checkpointing=True)
 
 results = pruner.iterative_prune(
     dataloader=dataloader_pruning,
@@ -190,7 +190,7 @@ model.load_state_dict(saved_state)
 
 # WANDA needs the dataloader to collect activations
 wanda_strategy = WANDAPruning(dataloader=dataloader_pruning, num_batches=50)
-pruner_wanda = GradProbe(model, wanda_strategy)
+pruner_wanda = GradProbe(model, wanda_strategy, use_fp16=True, use_gradient_checkpointing=True)
 
 results_wanda = pruner_wanda.iterative_prune(
     dataloader=dataloader_pruning,
