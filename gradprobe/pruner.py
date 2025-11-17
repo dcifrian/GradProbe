@@ -34,7 +34,9 @@ class GradProbe:
         model: nn.Module,
         strategy: PruningStrategy,
         device: str = "auto",
-        low_memory_mode: bool = False
+        low_memory_mode: bool = False,
+        use_fp16: bool = False,
+        use_gradient_checkpointing: bool = False
     ):
         """
         Initialize the GradProbe pruner.
@@ -50,7 +52,14 @@ class GradProbe:
                            - Not caching gradients during layerwise pruning
                            - Moving tensors to CPU when not needed
                            - Clearing CUDA cache aggressively
+                           - Using layer-by-layer processing
                            Useful for large models like Mistral-7B
+            use_fp16: If True, use float16 for gradient storage and saved states
+                     This cuts memory usage in half for these components
+                     Model weights remain in their original precision
+            use_gradient_checkpointing: If True, enable gradient checkpointing
+                                       to reduce activation memory during backprop
+                                       Trade-off: increases compute time ~30-50%
         """
         # Auto-detect device if requested
         if device == "auto":
@@ -61,11 +70,42 @@ class GradProbe:
         self.strategy = strategy
         self.device = device
         self.low_memory_mode = low_memory_mode
+        self.use_fp16 = use_fp16
+        self.use_gradient_checkpointing = use_gradient_checkpointing
         self.original_state = None
         self.pruning_mask = None
 
+        # Set gradient dtype based on use_fp16
+        self.grad_dtype = torch.float16 if use_fp16 else torch.float32
+
         if low_memory_mode:
-            print(f"Low memory mode enabled - will minimize GPU memory usage")
+            print(f"Low memory mode enabled - will use layer-by-layer processing")
+        if use_fp16:
+            print(f"FP16 mode enabled - gradients and saved states will use float16")
+        if use_gradient_checkpointing:
+            print(f"Gradient checkpointing enabled - will trade compute for memory")
+            self._enable_gradient_checkpointing()
+
+    def _enable_gradient_checkpointing(self):
+        """Enable gradient checkpointing for supported models."""
+        # Try to enable gradient checkpointing if model supports it
+        if hasattr(self.model, 'gradient_checkpointing_enable'):
+            try:
+                self.model.gradient_checkpointing_enable()
+                print("  ✓ Gradient checkpointing enabled on model")
+            except Exception as e:
+                print(f"  ⚠ Could not enable gradient checkpointing: {e}")
+        elif hasattr(self.model, 'config') and hasattr(self.model.config, 'use_cache'):
+            # For transformer models, need to disable cache for gradient checkpointing
+            try:
+                self.model.config.use_cache = False
+                if hasattr(self.model, 'gradient_checkpointing_enable'):
+                    self.model.gradient_checkpointing_enable()
+                    print("  ✓ Gradient checkpointing enabled on model")
+            except Exception as e:
+                print(f"  ⚠ Could not enable gradient checkpointing: {e}")
+        else:
+            print("  ⚠ Model does not support gradient checkpointing")
 
     def prune(
         self,
@@ -105,16 +145,43 @@ class GradProbe:
             print(f"Reduction factor: {reduction_factor}")
             print(f"Gradient threshold: {gradient_threshold:.2%}")
 
+        # Use layer-by-layer streaming in low_memory_mode to dramatically reduce memory usage
+        if self.low_memory_mode:
+            if verbose:
+                print(f"\nUsing layer-by-layer gradient streaming (low memory mode)")
+            return self._prune_layer_by_layer_streaming(
+                dataloader=dataloader,
+                loss_fn=loss_fn,
+                sparsity=sparsity,
+                num_batches=num_batches,
+                reduction_factor=reduction_factor,
+                gradient_threshold=gradient_threshold,
+                verbose=verbose,
+                compare_baseline=compare_baseline,
+                eval_fn=eval_fn
+            )
+
         # Save original model state
         # In low_memory_mode, save to CPU to avoid doubling GPU memory usage
+        # In fp16 mode, save in half precision to reduce memory usage
         if self.low_memory_mode:
-            self.original_state = {
-                name: param.data.cpu().clone() for name, param in self.model.named_parameters()
-            }
+            if self.use_fp16:
+                self.original_state = {
+                    name: param.data.cpu().half() for name, param in self.model.named_parameters()
+                }
+            else:
+                self.original_state = {
+                    name: param.data.cpu().clone() for name, param in self.model.named_parameters()
+                }
         else:
-            self.original_state = {
-                name: param.data.clone() for name, param in self.model.named_parameters()
-            }
+            if self.use_fp16:
+                self.original_state = {
+                    name: param.data.half() for name, param in self.model.named_parameters()
+                }
+            else:
+                self.original_state = {
+                    name: param.data.clone() for name, param in self.model.named_parameters()
+                }
 
         # Step 1: Get initial gradients with original model
         if verbose:
@@ -248,7 +315,8 @@ class GradProbe:
                 module.eval()
 
         # Store gradients on CPU to save GPU memory and keep all tensor ops on CPU
-        gradients = {name: torch.zeros(param.shape, dtype=param.dtype, device='cpu')
+        # Use self.grad_dtype (fp16 if use_fp16=True) to reduce memory usage
+        gradients = {name: torch.zeros(param.shape, dtype=self.grad_dtype, device='cpu')
                      for name, param in self.model.named_parameters()
                      if param.requires_grad}
 
@@ -276,9 +344,10 @@ class GradProbe:
 
             # Take element-wise maximum of absolute gradients
             # Move to CPU immediately to save GPU memory and keep all tensor ops on CPU
+            # Convert to self.grad_dtype (fp16 if enabled) to save memory
             for name, param in self.model.named_parameters():
                 if param.requires_grad and param.grad is not None:
-                    grad_abs = param.grad.data.abs().cpu()
+                    grad_abs = param.grad.data.abs().cpu().to(self.grad_dtype)
                     if batch_count == 0:
                         gradients[name] = grad_abs
                     else:
@@ -411,9 +480,15 @@ class GradProbe:
             final_masks: Final pruning masks
         """
         # First, restore all weights to original values
+        # Handle dtype conversion if original_state was saved in fp16
         for name, param in self.model.named_parameters():
             if name in self.original_state:
-                param.data.copy_(self.original_state[name])
+                saved_state = self.original_state[name]
+                # Convert to param dtype if needed (e.g., fp16 -> fp32)
+                if saved_state.dtype != param.dtype:
+                    param.data.copy_(saved_state.to(param.dtype))
+                else:
+                    param.data.copy_(saved_state)
 
         # Then apply final pruning (set to 0)
         for name, param in self.model.named_parameters():
@@ -451,6 +526,260 @@ class GradProbe:
         print("="*60)
         print(f"{'TOTAL':40s}: {total_pruned:8d} / {total_params:8d} ({overall_sparsity:6.2%})")
         print("="*60)
+
+    def _prune_layer_by_layer_streaming(
+        self,
+        dataloader: torch.utils.data.DataLoader,
+        loss_fn: Callable,
+        sparsity: float,
+        num_batches: int = 1,
+        reduction_factor: float = 0.1,
+        gradient_threshold: float = 0.0,
+        verbose: bool = True,
+        compare_baseline: bool = False,
+        eval_fn: Callable = None
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Memory-efficient layer-by-layer gradient streaming.
+
+        Instead of storing gradients for ALL parameters simultaneously,
+        process one layer at a time:
+        1. Compute original gradient for layer N only
+        2. Apply tentative reduction to layer N
+        3. Compute modified gradient for layer N only
+        4. Compare and decide for layer N
+        5. Clear gradients, move to layer N+1
+
+        This reduces memory from 4x model size to ~2x model size.
+        """
+        # Save original model state (still need this, but in fp16 if enabled)
+        if self.use_fp16:
+            self.original_state = {
+                name: param.data.cpu().half() for name, param in self.model.named_parameters()
+            }
+        else:
+            self.original_state = {
+                name: param.data.cpu().clone() for name, param in self.model.named_parameters()
+            }
+
+        # Get tentative masks from strategy (this is cheap, just boolean masks)
+        if verbose:
+            print(f"\nSelecting weights using {self.strategy.get_name()} strategy...")
+        tentative_masks = self.strategy.select_weights_to_prune(self.model, sparsity)
+
+        total_tentative = sum(mask.sum().item() for mask in tentative_masks.values())
+        if verbose:
+            print(f"Tentative pruning candidates: {total_tentative}")
+
+        # Get all weight layers (2D or higher dimensional parameters)
+        layer_params = []
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and len(param.shape) >= 2:
+                layer_params.append((name, param))
+
+        if verbose:
+            print(f"\nProcessing {len(layer_params)} layers sequentially...")
+            print(f"Memory savings: storing gradients for 1 layer at a time instead of all {len(layer_params)} layers")
+
+        # Process each layer individually
+        final_masks = {}
+
+        for layer_idx, (layer_name, layer_param) in enumerate(layer_params):
+            if verbose and layer_idx % 5 == 0:  # Print progress every 5 layers
+                print(f"  Layer {layer_idx+1}/{len(layer_params)}: {layer_name}")
+
+            # Skip if not in tentative masks
+            if layer_name not in tentative_masks:
+                continue
+
+            # Freeze all other parameters
+            original_requires_grad = {}
+            for name, param in self.model.named_parameters():
+                original_requires_grad[name] = param.requires_grad
+                if name != layer_name:
+                    param.requires_grad = False
+
+            # Compute original gradient for this layer ONLY
+            original_grad = self._compute_gradients_single_layer(
+                dataloader, loss_fn, num_batches, layer_name
+            )
+
+            # Apply tentative reduction to this layer
+            mask = tentative_masks[layer_name]
+            if mask.device != layer_param.device:
+                mask = mask.to(layer_param.device)
+            layer_param.data[mask] *= reduction_factor
+
+            # Compute modified gradient for this layer ONLY
+            modified_grad = self._compute_gradients_single_layer(
+                dataloader, loss_fn, num_batches, layer_name
+            )
+
+            # Compare gradients and decide (only for this layer)
+            gradient_below_threshold = modified_grad <= original_grad * (1.0 + gradient_threshold)
+            final_mask = tentative_masks[layer_name] & gradient_below_threshold
+            final_masks[layer_name] = final_mask
+
+            # Restore original values for this layer
+            if layer_name in self.original_state:
+                saved_state = self.original_state[layer_name]
+                if saved_state.dtype != layer_param.dtype:
+                    layer_param.data.copy_(saved_state.to(layer_param.dtype))
+                else:
+                    layer_param.data.copy_(saved_state)
+
+            # Apply final pruning to this layer
+            final_mask_device = final_mask.to(layer_param.device) if final_mask.device != layer_param.device else final_mask
+            layer_param.data[final_mask_device] = 0
+
+            # Restore requires_grad
+            for name, param in self.model.named_parameters():
+                param.requires_grad = original_requires_grad[name]
+
+            # Explicitly clear CUDA cache if on GPU
+            if self.device == 'cuda':
+                torch.cuda.empty_cache()
+
+        # Fill in masks for other parameters (biases, layer norms, etc.)
+        for name, param in self.model.named_parameters():
+            if name not in final_masks:
+                final_masks[name] = torch.zeros(param.data.shape, dtype=torch.bool, device='cpu')
+
+        self.pruning_mask = final_masks
+
+        if verbose:
+            print(f"\nLayer-by-layer streaming complete!")
+            self._print_pruning_statistics(final_masks)
+
+        # Compare with baseline if requested
+        if compare_baseline:
+            if eval_fn is None:
+                raise ValueError("eval_fn must be provided when compare_baseline=True")
+
+            if verbose:
+                print("\n" + "="*60)
+                print("BASELINE COMPARISON")
+                print("="*60)
+
+            # Save gradient-pruned state
+            if self.use_fp16:
+                gradient_pruned_state = {
+                    name: param.data.cpu().half() for name, param in self.model.named_parameters()
+                }
+            else:
+                gradient_pruned_state = {
+                    name: param.data.cpu().clone() for name, param in self.model.named_parameters()
+                }
+
+            # Evaluate gradient-based pruning
+            gradient_accuracy = eval_fn(self.model)
+            gradient_sparsity = self.get_sparsity()
+
+            # Apply magnitude-only (all tentative candidates)
+            for name, param in self.model.named_parameters():
+                if name in self.original_state:
+                    saved_state = self.original_state[name]
+                    if saved_state.dtype != param.dtype:
+                        param.data.copy_(saved_state.to(param.dtype))
+                    else:
+                        param.data.copy_(saved_state)
+                if name in tentative_masks:
+                    mask = tentative_masks[name].to(param.device) if tentative_masks[name].device != param.device else tentative_masks[name]
+                    param.data[mask] = 0
+
+            # Evaluate magnitude-only pruning
+            magnitude_accuracy = eval_fn(self.model)
+            magnitude_sparsity = self.get_sparsity()
+
+            # Restore gradient-pruned state
+            for name, param in self.model.named_parameters():
+                if name in gradient_pruned_state:
+                    saved_state = gradient_pruned_state[name]
+                    if saved_state.dtype != param.dtype:
+                        param.data.copy_(saved_state.to(param.dtype))
+                    else:
+                        param.data.copy_(saved_state)
+
+            if verbose:
+                print(f"Magnitude-only (all candidates):")
+                print(f"  Sparsity: {magnitude_sparsity:.2%}")
+                print(f"  Accuracy: {magnitude_accuracy:.2f}%")
+                print(f"\nGradient-filtered:")
+                print(f"  Sparsity: {gradient_sparsity:.2%}")
+                print(f"  Accuracy: {gradient_accuracy:.2f}%")
+                print(f"\nAccuracy gain from gradient filtering: {gradient_accuracy - magnitude_accuracy:+.2f}%")
+                print("="*60)
+
+        return final_masks
+
+    def _compute_gradients_single_layer(
+        self,
+        dataloader: torch.utils.data.DataLoader,
+        loss_fn: Callable,
+        num_batches: int,
+        layer_name: str
+    ) -> torch.Tensor:
+        """
+        Compute gradients for a SINGLE layer only.
+
+        This is the key memory optimization - we only store gradient for one layer
+        instead of all layers simultaneously.
+
+        Returns:
+            Gradient tensor for the specified layer (absolute maximum across batches)
+        """
+        # Disable dropout for deterministic gradients
+        dropout_states = {}
+        for name, module in self.model.named_modules():
+            if isinstance(module, (nn.Dropout, nn.Dropout1d, nn.Dropout2d, nn.Dropout3d)):
+                dropout_states[name] = module.training
+                module.eval()
+
+        # Get the parameter
+        layer_param = dict(self.model.named_parameters())[layer_name]
+
+        # Initialize gradient storage for this ONE layer only (use fp16 if enabled)
+        gradient = torch.zeros(layer_param.shape, dtype=self.grad_dtype, device='cpu')
+
+        batch_count = 0
+        for batch_idx, batch in enumerate(dataloader):
+            if batch_count >= num_batches:
+                break
+
+            # Zero gradients
+            self.model.zero_grad()
+
+            # Handle different batch formats
+            if isinstance(batch, (tuple, list)):
+                inputs, targets = batch[0].to(self.device), batch[1].to(self.device)
+            else:
+                inputs = batch.to(self.device)
+                targets = inputs
+
+            # Forward pass
+            outputs = self.model(inputs)
+            loss = loss_fn(outputs, targets)
+
+            # Backward pass
+            loss.backward()
+
+            # Extract gradient for this layer ONLY and convert to fp16 if enabled
+            if layer_param.grad is not None:
+                grad_abs = layer_param.grad.data.abs().cpu().to(self.grad_dtype)
+                if batch_count == 0:
+                    gradient = grad_abs
+                else:
+                    gradient = torch.maximum(gradient, grad_abs)
+
+            batch_count += 1
+
+        # Restore dropout states
+        for name, module in self.model.named_modules():
+            if name in dropout_states:
+                if dropout_states[name]:
+                    module.train()
+
+        return gradient
 
     def get_sparsity(self) -> float:
         """
@@ -684,7 +1013,8 @@ class GradProbe:
                 dropout_states[name] = module.training
                 module.eval()
 
-        gradients = {name: torch.zeros_like(param)
+        # Use self.grad_dtype (fp16 if use_fp16=True) to reduce memory usage
+        gradients = {name: torch.zeros(param.shape, dtype=self.grad_dtype, device=param.device)
                      for name, param in self.model.named_parameters()
                      if param.requires_grad}
 
@@ -708,12 +1038,14 @@ class GradProbe:
             loss.backward()
 
             # Take element-wise maximum of absolute gradients
+            # Convert to self.grad_dtype (fp16 if enabled) to save memory
             for name, param in self.model.named_parameters():
                 if param.requires_grad and param.grad is not None:
+                    grad_abs = param.grad.data.abs().to(self.grad_dtype)
                     if batch_count == 0:
-                        gradients[name] = param.grad.data.abs()
+                        gradients[name] = grad_abs
                     else:
-                        gradients[name] = torch.maximum(gradients[name], param.grad.data.abs())
+                        gradients[name] = torch.maximum(gradients[name], grad_abs)
 
             batch_count += 1
 
@@ -796,14 +1128,25 @@ class GradProbe:
 
         # Save original model state
         # In low_memory_mode, save to CPU to avoid doubling GPU memory usage
+        # In fp16 mode, save in half precision to reduce memory usage
         if self.low_memory_mode:
-            self.original_state = {
-                name: param.data.cpu().clone() for name, param in self.model.named_parameters()
-            }
+            if self.use_fp16:
+                self.original_state = {
+                    name: param.data.cpu().half() for name, param in self.model.named_parameters()
+                }
+            else:
+                self.original_state = {
+                    name: param.data.cpu().clone() for name, param in self.model.named_parameters()
+                }
         else:
-            self.original_state = {
-                name: param.data.clone() for name, param in self.model.named_parameters()
-            }
+            if self.use_fp16:
+                self.original_state = {
+                    name: param.data.half() for name, param in self.model.named_parameters()
+                }
+            else:
+                self.original_state = {
+                    name: param.data.clone() for name, param in self.model.named_parameters()
+                }
 
         all_masks = {}
 
