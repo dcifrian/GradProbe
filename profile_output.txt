@@ -1,0 +1,628 @@
+======================================================================
+MEMORY PROFILING: GradProbe on TinyStories-33M
+======================================================================
+
+Loading TinyStories-33M model...
+Model loaded successfully
+Model parameters: 68,514,048
+
+======================================================================
+MODEL PARAMETER MEMORY ANALYSIS
+======================================================================
+Parameter Name                                     Shape                     Size (MB)      
+----------------------------------------------------------------------
+transformer.wte.weight                             (50257, 768)                    147.24
+transformer.h.0.mlp.c_fc.weight                    (3072, 768)                       9.00
+transformer.h.0.mlp.c_proj.weight                  (768, 3072)                       9.00
+transformer.h.1.mlp.c_fc.weight                    (3072, 768)                       9.00
+transformer.h.1.mlp.c_proj.weight                  (768, 3072)                       9.00
+transformer.h.2.mlp.c_fc.weight                    (3072, 768)                       9.00
+transformer.h.2.mlp.c_proj.weight                  (768, 3072)                       9.00
+transformer.h.3.mlp.c_fc.weight                    (3072, 768)                       9.00
+transformer.h.3.mlp.c_proj.weight                  (768, 3072)                       9.00
+transformer.wpe.weight                             (2048, 768)                       6.00
+transformer.h.0.attn.attention.k_proj.weight       (768, 768)                        2.25
+transformer.h.0.attn.attention.v_proj.weight       (768, 768)                        2.25
+transformer.h.0.attn.attention.q_proj.weight       (768, 768)                        2.25
+transformer.h.0.attn.attention.out_proj.weight     (768, 768)                        2.25
+transformer.h.1.attn.attention.k_proj.weight       (768, 768)                        2.25
+transformer.h.1.attn.attention.v_proj.weight       (768, 768)                        2.25
+transformer.h.1.attn.attention.q_proj.weight       (768, 768)                        2.25
+transformer.h.1.attn.attention.out_proj.weight     (768, 768)                        2.25
+transformer.h.2.attn.attention.k_proj.weight       (768, 768)                        2.25
+transformer.h.2.attn.attention.v_proj.weight       (768, 768)                        2.25
+transformer.h.2.attn.attention.q_proj.weight       (768, 768)                        2.25
+transformer.h.2.attn.attention.out_proj.weight     (768, 768)                        2.25
+transformer.h.3.attn.attention.k_proj.weight       (768, 768)                        2.25
+transformer.h.3.attn.attention.v_proj.weight       (768, 768)                        2.25
+transformer.h.3.attn.attention.q_proj.weight       (768, 768)                        2.25
+transformer.h.3.attn.attention.out_proj.weight     (768, 768)                        2.25
+transformer.h.0.mlp.c_fc.bias                      (3072,)                           0.01
+transformer.h.1.mlp.c_fc.bias                      (3072,)                           0.01
+transformer.h.2.mlp.c_fc.bias                      (3072,)                           0.01
+transformer.h.3.mlp.c_fc.bias                      (3072,)                           0.01
+transformer.h.0.ln_1.weight                        (768,)                            0.00
+transformer.h.0.ln_1.bias                          (768,)                            0.00
+transformer.h.0.attn.attention.out_proj.bias       (768,)                            0.00
+transformer.h.0.ln_2.weight                        (768,)                            0.00
+transformer.h.0.ln_2.bias                          (768,)                            0.00
+transformer.h.0.mlp.c_proj.bias                    (768,)                            0.00
+transformer.h.1.ln_1.weight                        (768,)                            0.00
+transformer.h.1.ln_1.bias                          (768,)                            0.00
+transformer.h.1.attn.attention.out_proj.bias       (768,)                            0.00
+transformer.h.1.ln_2.weight                        (768,)                            0.00
+transformer.h.1.ln_2.bias                          (768,)                            0.00
+transformer.h.1.mlp.c_proj.bias                    (768,)                            0.00
+transformer.h.2.ln_1.weight                        (768,)                            0.00
+transformer.h.2.ln_1.bias                          (768,)                            0.00
+transformer.h.2.attn.attention.out_proj.bias       (768,)                            0.00
+transformer.h.2.ln_2.weight                        (768,)                            0.00
+transformer.h.2.ln_2.bias                          (768,)                            0.00
+transformer.h.2.mlp.c_proj.bias                    (768,)                            0.00
+transformer.h.3.ln_1.weight                        (768,)                            0.00
+transformer.h.3.ln_1.bias                          (768,)                            0.00
+transformer.h.3.attn.attention.out_proj.bias       (768,)                            0.00
+transformer.h.3.ln_2.weight                        (768,)                            0.00
+transformer.h.3.ln_2.bias                          (768,)                            0.00
+transformer.h.3.mlp.c_proj.bias                    (768,)                            0.00
+transformer.ln_f.weight                            (768,)                            0.00
+transformer.ln_f.bias                              (768,)                            0.00
+----------------------------------------------------------------------
+TOTAL                                                             68,514,048       261.36
+======================================================================
+
+Preparing data...
+Total tokens: 373
+Created 4 sequences of length 128
+
+======================================================================
+ACTIVATION MEMORY ESTIMATION
+======================================================================
+Model: gpt_neo
+Hidden size: 768
+Number of layers: 4
+Number of attention heads: 16
+Batch size: 1
+Sequence length: 128
+
+Estimated memory per layer:
+  Hidden states: 0.38 MB
+  Attention scores: 1.00 MB
+  FFN intermediate: 1.50 MB
+  Total per layer: 2.88 MB
+
+Total activation memory (all layers): 11.50 MB
+======================================================================
+
+======================================================================
+STARTING GRADPROBE PRUNING - MEMORY PROFILING
+======================================================================
+
+Initializing GradProbe with Magnitude Pruning strategy...
+
+Pruning configuration:
+  Target sparsity: 10.00%
+  Num batches: 5
+  Reduction factor: 0.1
+  Gradient threshold: 2.0
+
+Saving original model state...
+
+Step 1: Computing gradients with original model...
+  (This stores gradients for all parameters)
+
+Analyzing gradient storage:
+
+======================================================================
+GRADIENT MEMORY ANALYSIS
+======================================================================
+Parameter Name                                     Shape                     Size (MB)      
+----------------------------------------------------------------------
+transformer.wte.weight                             (50257, 768)                    147.24
+transformer.h.0.mlp.c_fc.weight                    (3072, 768)                       9.00
+transformer.h.0.mlp.c_proj.weight                  (768, 3072)                       9.00
+transformer.h.1.mlp.c_fc.weight                    (3072, 768)                       9.00
+transformer.h.1.mlp.c_proj.weight                  (768, 3072)                       9.00
+transformer.h.2.mlp.c_fc.weight                    (3072, 768)                       9.00
+transformer.h.2.mlp.c_proj.weight                  (768, 3072)                       9.00
+transformer.h.3.mlp.c_fc.weight                    (3072, 768)                       9.00
+transformer.h.3.mlp.c_proj.weight                  (768, 3072)                       9.00
+transformer.wpe.weight                             (2048, 768)                       6.00
+transformer.h.0.attn.attention.k_proj.weight       (768, 768)                        2.25
+transformer.h.0.attn.attention.v_proj.weight       (768, 768)                        2.25
+transformer.h.0.attn.attention.q_proj.weight       (768, 768)                        2.25
+transformer.h.0.attn.attention.out_proj.weight     (768, 768)                        2.25
+transformer.h.1.attn.attention.k_proj.weight       (768, 768)                        2.25
+transformer.h.1.attn.attention.v_proj.weight       (768, 768)                        2.25
+transformer.h.1.attn.attention.q_proj.weight       (768, 768)                        2.25
+transformer.h.1.attn.attention.out_proj.weight     (768, 768)                        2.25
+transformer.h.2.attn.attention.k_proj.weight       (768, 768)                        2.25
+transformer.h.2.attn.attention.v_proj.weight       (768, 768)                        2.25
+transformer.h.2.attn.attention.q_proj.weight       (768, 768)                        2.25
+transformer.h.2.attn.attention.out_proj.weight     (768, 768)                        2.25
+transformer.h.3.attn.attention.k_proj.weight       (768, 768)                        2.25
+transformer.h.3.attn.attention.v_proj.weight       (768, 768)                        2.25
+transformer.h.3.attn.attention.q_proj.weight       (768, 768)                        2.25
+transformer.h.3.attn.attention.out_proj.weight     (768, 768)                        2.25
+transformer.h.0.mlp.c_fc.bias                      (3072,)                           0.01
+transformer.h.1.mlp.c_fc.bias                      (3072,)                           0.01
+transformer.h.2.mlp.c_fc.bias                      (3072,)                           0.01
+transformer.h.3.mlp.c_fc.bias                      (3072,)                           0.01
+transformer.h.0.ln_1.weight                        (768,)                            0.00
+transformer.h.0.ln_1.bias                          (768,)                            0.00
+transformer.h.0.attn.attention.out_proj.bias       (768,)                            0.00
+transformer.h.0.ln_2.weight                        (768,)                            0.00
+transformer.h.0.ln_2.bias                          (768,)                            0.00
+transformer.h.0.mlp.c_proj.bias                    (768,)                            0.00
+transformer.h.1.ln_1.weight                        (768,)                            0.00
+transformer.h.1.ln_1.bias                          (768,)                            0.00
+transformer.h.1.attn.attention.out_proj.bias       (768,)                            0.00
+transformer.h.1.ln_2.weight                        (768,)                            0.00
+transformer.h.1.ln_2.bias                          (768,)                            0.00
+transformer.h.1.mlp.c_proj.bias                    (768,)                            0.00
+transformer.h.2.ln_1.weight                        (768,)                            0.00
+transformer.h.2.ln_1.bias                          (768,)                            0.00
+transformer.h.2.attn.attention.out_proj.bias       (768,)                            0.00
+transformer.h.2.ln_2.weight                        (768,)                            0.00
+transformer.h.2.ln_2.bias                          (768,)                            0.00
+transformer.h.2.mlp.c_proj.bias                    (768,)                            0.00
+transformer.h.3.ln_1.weight                        (768,)                            0.00
+transformer.h.3.ln_1.bias                          (768,)                            0.00
+transformer.h.3.attn.attention.out_proj.bias       (768,)                            0.00
+transformer.h.3.ln_2.weight                        (768,)                            0.00
+transformer.h.3.ln_2.bias                          (768,)                            0.00
+transformer.h.3.mlp.c_proj.bias                    (768,)                            0.00
+transformer.ln_f.weight                            (768,)                            0.00
+transformer.ln_f.bias                              (768,)                            0.00
+----------------------------------------------------------------------
+TOTAL                                                                              261.36
+======================================================================
+
+Note: We're storing TWO sets of gradients (original + modified)
+Expected gradient memory: 522.72 MB
+  Processing batch 1/5...
+  Processing batch 2/5...
+
+Original gradients computed and stored
+Gradient storage: 56 tensors
+
+Step 2: Selecting weights to prune using Magnitude strategy...
+Tentative pruning candidates: 6848179
+
+Analyzing pruning mask memory:
+Mask storage: 65.34 MB
+Note: We store masks for all parameters
+
+Step 3: Reducing tentative weights to 0.1x...
+
+Step 4: Computing gradients with reduced weights...
+  (This stores a SECOND set of gradients)
+
+NOTE: At this point we have:
+  - Original model weights: 261.36 MB
+  - Original gradients: 261.36 MB
+  - Modified gradients: 261.36 MB
+  - Pruning masks: 65.34 MB
+  - Saved original state: 261.36 MB
+  TOTAL (weights + gradients): 1110.78 MB
+  Processing batch 1/2...
+  Processing batch 2/2...
+
+Step 5: Comparing gradients and making pruning decisions...
+
+Step 6: Applying final pruning...
+
+Final sparsity: 9.92%
+Pruned 6,794,621 out of 68,514,048 parameters
+
+======================================================================
+MEMORY PROFILING RESULTS
+======================================================================
+
+======================================================================
+MEMORY PROFILE SUMMARY
+======================================================================
+Stage                                    Process RSS (MB)     Delta (MB)     
+----------------------------------------------------------------------
+00_initial                                        659.65            0.00
+01_model_loaded                                   758.93           99.28
+02_data_prepared                                  775.98          116.33
+03_pruner_initialized                             775.98          116.33
+04_saved_original_state                          1298.41          638.76
+05_allocated_gradient_storage                    1559.65          900.00
+06_forward_pass_batch_0                          1734.99         1075.34
+07_backward_pass_batch_0                         2025.37         1365.72
+06_forward_pass_batch_1                          1967.17         1307.52
+07_backward_pass_batch_1                         2089.87         1430.22
+08_original_gradients_computed                   2134.84         1475.20
+09_tentative_masks_created                       2259.43         1599.78
+10_weights_reduced                               2263.66         1604.01
+11_allocated_modified_gradient_storage           2410.89         1751.25
+12_modified_forward_batch_0                      2283.97         1624.32
+13_modified_backward_batch_0                     2480.29         1820.64
+12_modified_forward_batch_1                      2371.51         1711.86
+13_modified_backward_batch_1                     2567.83         1908.18
+14_modified_gradients_computed                   2567.83         1908.18
+15_final_masks_computed                          2604.64         1944.99
+16_final_pruning_applied                         2604.64         1944.99
+
+======================================================================
+PEAK MEMORY USAGE
+======================================================================
+Stage: 15_final_masks_computed
+Process RSS: 2604.64 MB
+Process VMS: 5199.39 MB
+Python Allocated: 4.96 MB
+PyTorch Allocated: 0.00 MB
+PyTorch Reserved: 0.00 MB
+
+======================================================================
+MEMORY INCREASE BY STAGE
+======================================================================
+
+00_initial -> 01_model_loaded
+  Process RSS delta: +99.28 MB
+  PyTorch allocated delta: +0.00 MB
+
+01_model_loaded -> 02_data_prepared
+  Process RSS delta: +17.05 MB
+  PyTorch allocated delta: +0.00 MB
+
+02_data_prepared -> 03_pruner_initialized
+  Process RSS delta: +0.00 MB
+  PyTorch allocated delta: +0.00 MB
+
+03_pruner_initialized -> 04_saved_original_state
+  Process RSS delta: +522.43 MB
+  PyTorch allocated delta: +0.00 MB
+
+04_saved_original_state -> 05_allocated_gradient_storage
+  Process RSS delta: +261.24 MB
+  PyTorch allocated delta: +0.00 MB
+
+05_allocated_gradient_storage -> 06_forward_pass_batch_0
+  Process RSS delta: +175.34 MB
+  PyTorch allocated delta: +0.00 MB
+
+06_forward_pass_batch_0 -> 07_backward_pass_batch_0
+  Process RSS delta: +290.38 MB
+  PyTorch allocated delta: +0.00 MB
+
+07_backward_pass_batch_0 -> 06_forward_pass_batch_1
+  Process RSS delta: -58.20 MB
+  PyTorch allocated delta: +0.00 MB
+
+06_forward_pass_batch_1 -> 07_backward_pass_batch_1
+  Process RSS delta: +122.70 MB
+  PyTorch allocated delta: +0.00 MB
+
+07_backward_pass_batch_1 -> 08_original_gradients_computed
+  Process RSS delta: +44.98 MB
+  PyTorch allocated delta: +0.00 MB
+
+08_original_gradients_computed -> 09_tentative_masks_created
+  Process RSS delta: +124.59 MB
+  PyTorch allocated delta: +0.00 MB
+
+09_tentative_masks_created -> 10_weights_reduced
+  Process RSS delta: +4.23 MB
+  PyTorch allocated delta: +0.00 MB
+
+10_weights_reduced -> 11_allocated_modified_gradient_storage
+  Process RSS delta: +147.24 MB
+  PyTorch allocated delta: +0.00 MB
+
+11_allocated_modified_gradient_storage -> 12_modified_forward_batch_0
+  Process RSS delta: -126.92 MB
+  PyTorch allocated delta: +0.00 MB
+
+12_modified_forward_batch_0 -> 13_modified_backward_batch_0
+  Process RSS delta: +196.32 MB
+  PyTorch allocated delta: +0.00 MB
+
+13_modified_backward_batch_0 -> 12_modified_forward_batch_1
+  Process RSS delta: -108.78 MB
+  PyTorch allocated delta: +0.00 MB
+
+12_modified_forward_batch_1 -> 13_modified_backward_batch_1
+  Process RSS delta: +196.32 MB
+  PyTorch allocated delta: +0.00 MB
+
+13_modified_backward_batch_1 -> 14_modified_gradients_computed
+  Process RSS delta: +0.00 MB
+  PyTorch allocated delta: +0.00 MB
+
+14_modified_gradients_computed -> 15_final_masks_computed
+  Process RSS delta: +36.81 MB
+  PyTorch allocated delta: +0.00 MB
+
+15_final_masks_computed -> 16_final_pruning_applied
+  Process RSS delta: +0.00 MB
+  PyTorch allocated delta: +0.00 MB
+
+======================================================================
+KEY FINDINGS
+======================================================================
+
+1. Model Parameters: 261.36 MB
+   - Stored once in model
+   - Copied once in 'original_state' dict
+   - TOTAL: 522.72 MB
+
+2. Gradients: 261.36 MB per set
+   - Original gradients: 261.36 MB
+   - Modified gradients: 261.36 MB
+   - TOTAL: 522.72 MB
+
+3. Pruning Masks: 65.34 MB
+   - Boolean masks for all parameters
+
+4. Activations (per forward pass):
+   - Estimated from model config
+   - Not stored between passes, but used during forward/backward
+
+EXPECTED MINIMUM MEMORY (without activations): 1110.78 MB
+ACTUAL PEAK MEMORY: 2604.64 MB
+  at stage: 15_final_masks_computed
+
+OVERHEAD (activations + Python + OS): 1493.86 MB
+
+======================================================================
+DETAILED SNAPSHOTS
+======================================================================
+
+======================================================================
+Stage: 00_initial
+======================================================================
+Process Memory:
+  RSS: 659.65 MB
+  VMS: 1276.20 MB
+Python Allocated: 0.00 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 01_model_loaded
+======================================================================
+Process Memory:
+  RSS: 758.93 MB
+  VMS: 2775.96 MB
+Python Allocated: 4.88 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 02_data_prepared
+======================================================================
+Process Memory:
+  RSS: 775.98 MB
+  VMS: 3766.00 MB
+Python Allocated: 4.88 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 03_pruner_initialized
+======================================================================
+Process Memory:
+  RSS: 775.98 MB
+  VMS: 3766.00 MB
+Python Allocated: 4.88 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 04_saved_original_state
+======================================================================
+Process Memory:
+  RSS: 1298.41 MB
+  VMS: 4010.92 MB
+Python Allocated: 4.90 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 05_allocated_gradient_storage
+======================================================================
+Process Memory:
+  RSS: 1559.65 MB
+  VMS: 4272.16 MB
+Python Allocated: 4.91 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 06_forward_pass_batch_0
+======================================================================
+Process Memory:
+  RSS: 1734.99 MB
+  VMS: 4377.61 MB
+Python Allocated: 4.92 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 07_backward_pass_batch_0
+======================================================================
+Process Memory:
+  RSS: 2025.37 MB
+  VMS: 4620.12 MB
+Python Allocated: 4.92 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 06_forward_pass_batch_1
+======================================================================
+Process Memory:
+  RSS: 1967.17 MB
+  VMS: 4561.92 MB
+Python Allocated: 4.93 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 07_backward_pass_batch_1
+======================================================================
+Process Memory:
+  RSS: 2089.87 MB
+  VMS: 4684.62 MB
+Python Allocated: 4.92 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 08_original_gradients_computed
+======================================================================
+Process Memory:
+  RSS: 2134.84 MB
+  VMS: 4729.62 MB
+Python Allocated: 4.93 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 09_tentative_masks_created
+======================================================================
+Process Memory:
+  RSS: 2259.43 MB
+  VMS: 4854.18 MB
+Python Allocated: 4.94 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 10_weights_reduced
+======================================================================
+Process Memory:
+  RSS: 2263.66 MB
+  VMS: 4858.51 MB
+Python Allocated: 4.94 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 11_allocated_modified_gradient_storage
+======================================================================
+Process Memory:
+  RSS: 2410.89 MB
+  VMS: 5005.75 MB
+Python Allocated: 4.95 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 12_modified_forward_batch_0
+======================================================================
+Process Memory:
+  RSS: 2283.97 MB
+  VMS: 4878.72 MB
+Python Allocated: 4.95 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 13_modified_backward_batch_0
+======================================================================
+Process Memory:
+  RSS: 2480.29 MB
+  VMS: 5075.04 MB
+Python Allocated: 4.95 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 12_modified_forward_batch_1
+======================================================================
+Process Memory:
+  RSS: 2371.51 MB
+  VMS: 4966.26 MB
+Python Allocated: 4.96 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 13_modified_backward_batch_1
+======================================================================
+Process Memory:
+  RSS: 2567.83 MB
+  VMS: 5162.58 MB
+Python Allocated: 4.95 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 14_modified_gradients_computed
+======================================================================
+Process Memory:
+  RSS: 2567.83 MB
+  VMS: 5162.58 MB
+Python Allocated: 4.96 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 15_final_masks_computed
+======================================================================
+Process Memory:
+  RSS: 2604.64 MB
+  VMS: 5199.39 MB
+Python Allocated: 4.96 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+Stage: 16_final_pruning_applied
+======================================================================
+Process Memory:
+  RSS: 2604.64 MB
+  VMS: 5199.39 MB
+Python Allocated: 4.96 MB
+PyTorch Memory:
+  Allocated: 0.00 MB
+  Reserved: 0.00 MB
+  Cached: 0.00 MB
+
+======================================================================
+PROFILING COMPLETE
+======================================================================

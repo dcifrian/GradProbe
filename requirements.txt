@@ -1,0 +1,12 @@
+# GradProbe Requirements
+
+# PyTorch
+torch>=2.0.0
+
+# For future HuggingFace integration (TinyStories)
+transformers>=4.30.0
+datasets>=2.14.0
+
+# Utilities
+numpy>=1.24.0
+tqdm>=4.65.0
