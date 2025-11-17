@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import psutil
 import time
+import gc
 
 from .base import PruningStrategy
 
@@ -50,6 +51,7 @@ class WANDAPruning(PruningStrategy):
         """
         self.dataloader = dataloader
         self.num_batches = num_batches
+        self._cached_activation_norms = None  # Cache activations to avoid recomputation
 
     def select_weights_to_prune(
         self,
@@ -72,10 +74,15 @@ class WANDAPruning(PruningStrategy):
         if not 0 <= sparsity <= 1:
             raise ValueError(f"Sparsity must be between 0 and 1, got {sparsity}")
 
-        # Collect activations for each layer
-        log_memory("Before collecting activation norms")
-        activation_norms = self._collect_activation_norms(model)
-        log_memory(f"After collecting activation norms for {len(activation_norms)} layers")
+        # Collect activations for each layer (cache to avoid recomputation in iterative pruning)
+        if self._cached_activation_norms is None:
+            log_memory("Before collecting activation norms (first time)")
+            activation_norms = self._collect_activation_norms(model)
+            self._cached_activation_norms = activation_norms  # Cache for future calls
+            log_memory(f"After collecting activation norms for {len(activation_norms)} layers (cached)")
+        else:
+            log_memory("Using cached activation norms (skipping re-collection)")
+            activation_norms = self._cached_activation_norms
 
         if not activation_norms:
             # Fall back to magnitude-only if no activations collected
@@ -289,36 +296,35 @@ class WANDAPruning(PruningStrategy):
         samples = []
 
         for name, param in param_list:
-            # Sample indices BEFORE computing importance to save memory
-            n_samples = int(param.numel() * sample_ratio)
-            if n_samples == 0:
-                continue
-
-            # Get random sample of indices from flattened param
-            indices = torch.randperm(param.numel(), device='cpu')[:n_samples]
-
-            # Compute importance only for sampled weights
             if name in activation_norms:
-                act_norm = activation_norms[name]
+                act_norm = activation_norms[name].to(param.device)
                 if len(param.shape) == 2:
-                    # For 2D: importance[i,j] = |W[i,j]| * ||X[j]||
-                    # Sample specific [i,j] positions
-                    out_features, in_features = param.shape
-                    row_indices = indices // in_features
-                    col_indices = indices % in_features
-
-                    # Get sampled weights and corresponding activation norms
-                    sampled_weights = param.data.flatten()[indices].abs().cpu()
-                    sampled_act_norms = act_norm[col_indices].cpu()
-                    importance_samples = sampled_weights * sampled_act_norms
+                    act_norm_expanded = act_norm.unsqueeze(0)
+                    importance = param.data.abs() * act_norm_expanded
                 else:
-                    # For other shapes, just use magnitude
-                    importance_samples = param.data.flatten()[indices].abs().cpu()
+                    importance = param.data.abs()
+                importance_flat = importance.cpu().flatten()
             else:
-                # No activation data, use magnitude only
-                importance_samples = param.data.flatten()[indices].abs().cpu()
+                importance_flat = param.data.abs().cpu().flatten()
 
-            samples.append(importance_samples)
+            # Sample from this parameter
+            n_samples = int(len(importance_flat) * sample_ratio)
+            if n_samples > 0:
+                indices = torch.randperm(len(importance_flat))[:n_samples]
+                samples.append(importance_flat[indices])
+
+            # Explicitly delete importance tensors to free memory immediately
+            del importance_flat
+            if name in activation_norms and len(param.shape) == 2:
+                del importance, act_norm_expanded
+            elif name in activation_norms:
+                del importance
+
+        # Force garbage collection to free memory from deleted tensors
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        log_memory("After sampling and garbage collection")
 
         # Estimate threshold from samples
         all_samples = torch.cat(samples)
