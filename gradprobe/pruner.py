@@ -592,14 +592,10 @@ class GradProbe:
             if layer_name not in tentative_masks:
                 continue
 
-            # Freeze all other parameters
-            original_requires_grad = {}
-            for name, param in self.model.named_parameters():
-                original_requires_grad[name] = param.requires_grad
-                if name != layer_name:
-                    param.requires_grad = False
-
             # Compute original gradient for this layer ONLY
+            # Note: We don't freeze other layers (no requires_grad manipulation).
+            # PyTorch will compute all gradients but we only extract the one we need.
+            # This is faster than freezing/unfreezing which adds overhead.
             original_grad = self._compute_gradients_single_layer(
                 dataloader, loss_fn, num_batches, layer_name
             )
@@ -631,10 +627,6 @@ class GradProbe:
             # Apply final pruning to this layer
             final_mask_device = final_mask.to(layer_param.device) if final_mask.device != layer_param.device else final_mask
             layer_param.data[final_mask_device] = 0
-
-            # Restore requires_grad
-            for name, param in self.model.named_parameters():
-                param.requires_grad = original_requires_grad[name]
 
             # Explicitly clear CUDA cache if on GPU
             if self.device == 'cuda':
