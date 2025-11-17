@@ -40,20 +40,22 @@ class MagnitudePruning(PruningStrategy):
             raise ValueError(f"Sparsity must be between 0 and 1, got {sparsity}")
 
         # Collect all weights and their absolute values
+        # Move to CPU to avoid CUDA OOM when model already occupies most VRAM
         all_weights = []
         param_shapes = {}
         param_names = []
 
         for name, param in model.named_parameters():
             if param.requires_grad and len(param.shape) >= 2:  # Only prune weight matrices
-                all_weights.append(param.data.abs().flatten())
+                # Move to CPU before flattening to avoid CUDA OOM
+                all_weights.append(param.data.abs().cpu().flatten())
                 param_shapes[name] = param.shape
                 param_names.append(name)
 
         if not all_weights:
             return {}
 
-        # Concatenate all weights and find the threshold
+        # Concatenate all weights and find the threshold (on CPU)
         all_weights_flat = torch.cat(all_weights)
         num_weights_to_prune = int(sparsity * len(all_weights_flat))
 
@@ -77,22 +79,17 @@ class MagnitudePruning(PruningStrategy):
         ).values.max()
 
         # Create masks for each parameter
-        # Create on CPU if model is on CUDA to save GPU memory
+        # Always compute on CPU to avoid CUDA OOM when model occupies most VRAM
         masks = {}
         for name, param in model.named_parameters():
             if name in param_names:
                 # True indicates this weight should be tentatively pruned
-                mask = param.data.abs() <= threshold
-                if param.device.type == 'cuda':
-                    masks[name] = mask.cpu()
-                else:
-                    masks[name] = mask
+                # Compute on CPU to avoid CUDA OOM
+                mask = param.data.abs().cpu() <= threshold
+                masks[name] = mask
             else:
                 # Don't prune this parameter
-                if param.device.type == 'cuda':
-                    masks[name] = torch.zeros(param.data.shape, dtype=torch.bool, device='cpu')
-                else:
-                    masks[name] = torch.zeros_like(param.data, dtype=torch.bool)
+                masks[name] = torch.zeros(param.data.shape, dtype=torch.bool, device='cpu')
 
         return masks
 
