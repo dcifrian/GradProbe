@@ -116,7 +116,10 @@ class MagnitudePruning(PruningStrategy):
             mask_name = f"{param_name}_mask"
             if hasattr(module, mask_name):
                 pytorch_mask = getattr(module, mask_name)
-                # Invert for our convention (True = prune)
+                # Convert to boolean if needed (PyTorch uses 0.0/1.0 floats sometimes)
+                if pytorch_mask.dtype not in (torch.bool, torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64):
+                    pytorch_mask = pytorch_mask.bool()
+                # Invert for our convention (True = prune, PyTorch uses True = keep)
                 our_mask = ~pytorch_mask
                 masks[name] = our_mask.cpu() if our_mask.device.type == 'cuda' else our_mask
             else:
