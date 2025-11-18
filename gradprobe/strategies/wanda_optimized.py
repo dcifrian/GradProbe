@@ -166,7 +166,7 @@ class WANDAPruningOptimized(PruningStrategy):
 
         # Check if we have cached histogram (for layerwise pruning speedup)
         if self._cached_histogram_info is not None:
-            # Use cached histogram structure from first layer
+            # Use cached histogram from first layer (no torch.histc!)
             log_memory(f"Using cached histogram from first layer (skipping torch.histc)")
             cached = self._cached_histogram_info
             histogram = cached['histogram']
@@ -177,11 +177,13 @@ class WANDAPruningOptimized(PruningStrategy):
 
             # Use cached histogram to find target bin
             coarse_bin_idx = (cumsum >= target_count).nonzero(as_tuple=True)[0]
+
             if len(coarse_bin_idx) == 0:
-                # Distribution shifted significantly - fallback to full histogram
-                log_memory(f"Cached histogram insufficient, rebuilding...")
-                self._cached_histogram_info = None
-                # Will rebuild below
+                # Target beyond cached histogram - use wide search
+                initial_threshold = hist_max
+                search_min = min_val
+                search_max = max_val
+                log_memory(f"Cached: Target beyond range, using max threshold with wide search")
             else:
                 coarse_bin_idx = coarse_bin_idx[0].item()
                 bin_count = histogram[coarse_bin_idx].item()
@@ -193,8 +195,7 @@ class WANDAPruningOptimized(PruningStrategy):
                 search_max = max_val
 
                 # Check if cached fine histogram exists
-                if bin_density > 0.1 and 'histogram_fine' in cached:
-                    # Use cached fine histogram
+                if 'histogram_fine' in cached:
                     histogram_fine = cached['histogram_fine']
                     cumsum_fine = cached['cumsum_fine']
                     fine_min = cached['fine_min']
@@ -212,15 +213,17 @@ class WANDAPruningOptimized(PruningStrategy):
                     fine_bin_idx = (cumsum_fine >= fine_target).nonzero(as_tuple=True)[0]
 
                     if len(fine_bin_idx) == 0:
-                        # Fine histogram cache invalid - use coarse
+                        # Use coarse estimate with wide search
                         initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
-                        log_memory(f"Cached fine histogram insufficient, using coarse estimate: threshold={initial_threshold:.6f}")
+                        search_min = min_val
+                        search_max = max_val
+                        log_memory(f"Cached: Fine target not reached, using coarse with wide search")
                     else:
                         fine_bin_idx = fine_bin_idx[0].item()
                         initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
 
-                        # Set tight bounds based on element count
-                        slack_percent = 0.01
+                        # Set bounds based on element count (wider slack since histogram may be stale)
+                        slack_percent = 0.05  # 5% slack for cached histogram
                         lower_target_fine = fine_target * (1 - slack_percent)
                         upper_target_fine = fine_target * (1 + slack_percent)
 
@@ -233,9 +236,9 @@ class WANDAPruningOptimized(PruningStrategy):
                         search_min = max(min_val, fine_min + lower_bin * bin_width_fine)
                         search_max = min(max_val, fine_min + (upper_bin + 1) * bin_width_fine)
 
-                        log_memory(f"Cached: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}, search range: bins [{lower_bin}, {upper_bin}]")
+                        log_memory(f"Cached: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}, search range: bins [{lower_bin}, {upper_bin}] (±{slack_percent*100:.0f}% slack)")
                 else:
-                    # Use coarse estimate from cached histogram
+                    # No fine histogram cached - use coarse
                     initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
                     log_memory(f"Cached: Using coarse estimate: threshold={initial_threshold:.6f}")
 
@@ -343,19 +346,43 @@ class WANDAPruningOptimized(PruningStrategy):
                 }
                 log_memory(f"Cached histogram (coarse + fine) for future layers")
             else:
-                # Low density - coarse estimate is good enough
+                # Low density - coarse estimate is good enough for this layer
+                # But still build fine histogram for caching (for future layers)
                 initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
                 log_memory(f"Using coarse estimate: threshold={initial_threshold:.6f}")
 
-                # Cache histogram (coarse only)
+                # Build fine histogram anyway for caching purposes
+                fine_min = hist_min + coarse_bin_idx * bin_width_coarse
+                fine_max = hist_min + (coarse_bin_idx + 1) * bin_width_coarse
+                fine_eps = (fine_max - fine_min) * 1e-6
+                fine_min -= fine_eps
+                fine_max += fine_eps
+
+                log_memory(f"Building fine histogram for cache: [{fine_min:.6f}, {fine_max:.6f}] with {num_bins_fine} bins")
+
+                histogram_fine = torch.zeros(num_bins_fine)
+                for idx, (name, importance) in enumerate(importance_cache):
+                    importance_f32 = importance.float()
+                    hist = torch.histc(importance_f32, bins=num_bins_fine, min=fine_min, max=fine_max)
+                    histogram_fine += hist
+
+                cumsum_fine = histogram_fine.cumsum(0)
+                bin_width_fine = (fine_max - fine_min) / num_bins_fine
+
+                # Cache histogram (coarse + fine)
                 self._cached_histogram_info = {
                     'histogram': histogram,
                     'cumsum': cumsum,
                     'hist_min': hist_min,
                     'hist_max': hist_max,
-                    'bin_width_coarse': bin_width_coarse
+                    'bin_width_coarse': bin_width_coarse,
+                    'histogram_fine': histogram_fine,
+                    'cumsum_fine': cumsum_fine,
+                    'fine_min': fine_min,
+                    'fine_max': fine_max,
+                    'bin_width_fine': bin_width_fine
                 }
-                log_memory(f"Cached histogram (coarse only) for future layers")
+                log_memory(f"Cached histogram (coarse + fine) for future layers")
 
         # Clamp to actual data range
         initial_threshold = max(min_val, min(max_val, initial_threshold))
