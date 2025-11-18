@@ -515,38 +515,71 @@ class WANDAPruningOptimized(PruningStrategy):
                             if near_upper_edge and actual_sparsity < sparsity:
                                 # Stuck near top, need HIGHER threshold (more sparsity) - expand UPWARD
                                 # Binary search has been pushing low=threshold, converging near upper edge
-                                # Jump to next histogram bin above current high bound
+                                # Use histogram bin counts to estimate how far to jump
                                 if high >= hist_min and high < hist_max:
                                     current_bin = int((high - hist_min) / bin_width_coarse)
-                                    # Jump to next coarse bin boundary
-                                    new_high = min(max_val, hist_min + (current_bin + 1) * bin_width_coarse)
+
+                                    # How many more elements do we need to prune?
+                                    current_count = int(actual_sparsity * total_count)
+                                    needed_count = int(sparsity * total_count)
+                                    additional_needed = int((needed_count - current_count) * 1.2)  # 20% buffer
+
+                                    # Sum histogram bins starting from next bin until we accumulate enough elements
+                                    accumulated = 0
+                                    target_bin = current_bin + 1
+                                    while target_bin < len(histogram) and accumulated < additional_needed:
+                                        accumulated += histogram[target_bin].item()
+                                        target_bin += 1
+
+                                    # Jump to that bin (or at least +1 bin to make progress)
+                                    target_bin = max(target_bin, current_bin + 1)
+                                    new_high = min(max_val, hist_min + target_bin * bin_width_coarse)
+                                    log_memory(f"Jumping from bin {current_bin} to bin {target_bin-1} (need ~{additional_needed} more elements, accumulated {accumulated})")
                                 else:
                                     # Outside histogram range - expand to max_val
                                     new_high = max_val
 
                                 if new_high > high:
                                     high = new_high
+                                    search_max = new_high  # Update search_max so future "near edge" checks work correctly
                                     expanded = True
                                     last_expansion_iteration = iteration
-                                    log_memory(f"Error stuck at {error:.6f}, range collapsed near upper edge (sparsity too low), expanding upward to next histogram bin: [{low:.6f}, {high:.6f}]")
+                                    log_memory(f"Error stuck at {error:.6f}, range collapsed near upper edge (sparsity too low), expanding upward: [{low:.6f}, {high:.6f}]")
 
                             elif near_lower_edge and actual_sparsity > sparsity:
                                 # Stuck near bottom, need LOWER threshold (less sparsity) - expand DOWNWARD
                                 # Binary search has been pushing high=threshold, converging near lower edge
-                                # Jump to previous histogram bin below current low bound
+                                # Use histogram bin counts to estimate how far to jump
                                 if low > hist_min and low <= hist_max:
                                     current_bin = int((low - hist_min) / bin_width_coarse)
-                                    # Jump to previous coarse bin boundary
-                                    new_low = max(min_val, hist_min + (current_bin - 1) * bin_width_coarse)
+
+                                    # How many fewer elements do we need to prune?
+                                    current_count = int(actual_sparsity * total_count)
+                                    needed_count = int(sparsity * total_count)
+                                    reduction_needed = int((current_count - needed_count) * 1.2)  # 20% buffer
+
+                                    # Sum histogram bins starting from previous bin (backwards) until we accumulate enough elements
+                                    accumulated = 0
+                                    target_bin = current_bin - 1
+                                    while target_bin >= 0 and accumulated < reduction_needed:
+                                        accumulated += histogram[target_bin].item()
+                                        target_bin -= 1
+
+                                    # Jump to that bin (or at least -1 bin to make progress)
+                                    target_bin = max(0, target_bin)
+                                    target_bin = min(target_bin, current_bin - 1)
+                                    new_low = max(min_val, hist_min + target_bin * bin_width_coarse)
+                                    log_memory(f"Jumping from bin {current_bin} to bin {target_bin+1} (need ~{reduction_needed} fewer elements, accumulated {accumulated})")
                                 else:
                                     # Outside histogram range - expand to min_val
                                     new_low = min_val
 
                                 if new_low < low:
                                     low = new_low
+                                    search_min = new_low  # Update search_min so future "near edge" checks work correctly
                                     expanded = True
                                     last_expansion_iteration = iteration
-                                    log_memory(f"Error stuck at {error:.6f}, range collapsed near lower edge (sparsity too high), expanding downward to next histogram bin: [{low:.6f}, {high:.6f}]")
+                                    log_memory(f"Error stuck at {error:.6f}, range collapsed near lower edge (sparsity too high), expanding downward: [{low:.6f}, {high:.6f}]")
 
                             # If we couldn't expand, give up to avoid infinite loop
                             # But only if we haven't expanded recently (give it time to stabilize)
