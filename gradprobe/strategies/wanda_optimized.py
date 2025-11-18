@@ -54,10 +54,12 @@ class WANDAPruningOptimized(PruningStrategy):
         self.num_batches = num_batches
         self._cached_activation_norms = None  # Cache activations to avoid recomputation
         self._cached_histogram_info = None  # Cache histogram for layerwise pruning speedup
+        self._cached_sparsity = None  # Track which sparsity level the histogram was built for
 
     def clear_histogram_cache(self):
         """Clear cached histogram info. Call this when starting a new pruning run."""
         self._cached_histogram_info = None
+        self._cached_sparsity = None
 
     def select_weights_to_prune(
         self,
@@ -85,6 +87,12 @@ class WANDAPruningOptimized(PruningStrategy):
 
         if not 0 <= sparsity <= 1:
             raise ValueError(f"Sparsity must be between 0 and 1, got {sparsity}")
+
+        # Clear histogram cache if sparsity changed (histogram only valid for one sparsity level)
+        if self._cached_sparsity is not None and abs(self._cached_sparsity - sparsity) > 1e-9:
+            log_memory(f"Sparsity changed from {self._cached_sparsity:.4f} to {sparsity:.4f}, clearing histogram cache")
+            self._cached_histogram_info = None
+            self._cached_sparsity = None
 
         # Collect activations for each layer (cache to avoid recomputation in iterative pruning)
         if self._cached_activation_norms is None:
@@ -344,7 +352,8 @@ class WANDAPruningOptimized(PruningStrategy):
                     'fine_max': fine_max,
                     'bin_width_fine': bin_width_fine
                 }
-                log_memory(f"Cached histogram (coarse + fine) for future layers")
+                self._cached_sparsity = sparsity
+                log_memory(f"Cached histogram (coarse + fine) for future layers at sparsity={sparsity:.4f}")
             else:
                 # Low density - coarse estimate is good enough for this layer
                 # But still build fine histogram for caching (for future layers)
@@ -382,7 +391,8 @@ class WANDAPruningOptimized(PruningStrategy):
                     'fine_max': fine_max,
                     'bin_width_fine': bin_width_fine
                 }
-                log_memory(f"Cached histogram (coarse + fine) for future layers")
+                self._cached_sparsity = sparsity
+                log_memory(f"Cached histogram (coarse + fine) for future layers at sparsity={sparsity:.4f}")
 
         # Clamp to actual data range
         initial_threshold = max(min_val, min(max_val, initial_threshold))
