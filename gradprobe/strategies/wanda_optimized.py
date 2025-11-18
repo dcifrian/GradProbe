@@ -197,7 +197,15 @@ class WANDAPruningOptimized(PruningStrategy):
             fine_min -= fine_eps
             fine_max += fine_eps
 
-            log_memory(f"Pass 2: Zooming into [{fine_min:.6f}, {fine_max:.6f}] with {num_bins_fine} bins")
+            # Compute local target: subtract values in previous bins
+            if coarse_bin_idx > 0:
+                values_below_target_bin = cumsum[coarse_bin_idx - 1].item()
+            else:
+                values_below_target_bin = 0
+
+            fine_target = target_count - values_below_target_bin
+
+            log_memory(f"Pass 2: Zooming into [{fine_min:.6f}, {fine_max:.6f}] with {num_bins_fine} bins, fine_target={fine_target:.0f}")
 
             histogram_fine = torch.zeros(num_bins_fine)
             for idx, (name, importance) in enumerate(importance_cache):
@@ -205,12 +213,14 @@ class WANDAPruningOptimized(PruningStrategy):
                 hist = torch.histc(importance_f32, bins=num_bins_fine, min=fine_min, max=fine_max)
                 histogram_fine += hist
 
-            # Find threshold in fine histogram
+            # Find threshold in fine histogram using local target
             cumsum_fine = histogram_fine.cumsum(0)
-            fine_bin_idx = (cumsum_fine >= target_count).nonzero(as_tuple=True)[0]
+            fine_bin_idx = (cumsum_fine >= fine_target).nonzero(as_tuple=True)[0]
 
             if len(fine_bin_idx) == 0:
-                raise RuntimeError(f"Fine histogram failed: cumsum never reached target_count")
+                raise RuntimeError(f"Fine histogram failed: cumsum never reached fine_target. "
+                                 f"fine_cumsum[-1]={cumsum_fine[-1].item():.0f}, fine_target={fine_target:.0f}, "
+                                 f"values_below={values_below_target_bin:.0f}, global_target={target_count}")
 
             fine_bin_idx = fine_bin_idx[0].item()
             bin_width_fine = (fine_max - fine_min) / num_bins_fine
@@ -220,12 +230,12 @@ class WANDAPruningOptimized(PruningStrategy):
             # Allow ±1% slack in sparsity (e.g., 9-11% for 10% target)
             # This adapts to density - tight in dense regions, wider in sparse regions
             slack_percent = 0.01
-            lower_target = target_count * (1 - slack_percent)
-            upper_target = target_count * (1 + slack_percent)
+            lower_target_fine = fine_target * (1 - slack_percent)
+            upper_target_fine = fine_target * (1 + slack_percent)
 
             # Find bins that bracket these element counts
-            lower_bin_idx = (cumsum_fine >= lower_target).nonzero(as_tuple=True)[0]
-            upper_bin_idx = (cumsum_fine >= upper_target).nonzero(as_tuple=True)[0]
+            lower_bin_idx = (cumsum_fine >= lower_target_fine).nonzero(as_tuple=True)[0]
+            upper_bin_idx = (cumsum_fine >= upper_target_fine).nonzero(as_tuple=True)[0]
 
             lower_bin = lower_bin_idx[0].item() if len(lower_bin_idx) > 0 else 0
             upper_bin = upper_bin_idx[0].item() if len(upper_bin_idx) > 0 else num_bins_fine - 1
