@@ -147,16 +147,30 @@ class WANDAPruningOptimized(PruningStrategy):
 
         log_memory(f"Value range: min={min_val:.6f}, max={max_val:.6f}, total_count={total_count}")
 
+        # Check dtype and count zeros
+        first_dtype = importance_cache[0][1].dtype if importance_cache else None
+        zero_count = sum((imp == 0).sum().item() for _, imp in importance_cache)
+        log_memory(f"Importance dtype: {first_dtype}, zeros: {zero_count}/{total_count} ({zero_count/total_count*100:.1f}%)")
+
         # Build histogram to estimate initial threshold
         # Use 10000 bins for good resolution
+        # Expand range slightly to avoid boundary issues with torch.histc
         num_bins = 10000
         histogram = torch.zeros(num_bins)
+        eps = (max_val - min_val) * 1e-6 if max_val > min_val else 1e-6
+        hist_min = min_val - eps
+        hist_max = max_val + eps
 
-        log_memory(f"Building histogram with {num_bins} bins")
-        for _, importance in importance_cache:
-            # torch.histc is memory efficient - doesn't keep the full tensor
-            hist = torch.histc(importance, bins=num_bins, min=min_val, max=max_val)
+        log_memory(f"Building histogram with {num_bins} bins, range=[{hist_min:.6f}, {hist_max:.6f}]")
+        for idx, (name, importance) in enumerate(importance_cache):
+            # torch.histc requires float32 and doesn't work well with fp16
+            importance_f32 = importance.float()
+            hist = torch.histc(importance_f32, bins=num_bins, min=hist_min, max=hist_max)
             histogram += hist
+
+            # Debug first few
+            if idx < 3:
+                log_memory(f"  Layer {idx} ({name}): {importance.numel()} values, hist.sum()={hist.sum().item():.0f}, dtype={importance.dtype}")
 
         # Debug: check histogram
         hist_total = histogram.sum().item()
@@ -177,8 +191,10 @@ class WANDAPruningOptimized(PruningStrategy):
 
         bin_idx = threshold_bin[0].item()
         # Convert bin index to actual value
-        bin_width = (max_val - min_val) / num_bins
-        initial_threshold = min_val + (bin_idx + 0.5) * bin_width
+        bin_width = (hist_max - hist_min) / num_bins
+        initial_threshold = hist_min + (bin_idx + 0.5) * bin_width
+        # Clamp to actual data range (not expanded range)
+        initial_threshold = max(min_val, min(max_val, initial_threshold))
         log_memory(f"Histogram-based threshold: bin {bin_idx}/{num_bins}, threshold={initial_threshold:.6f}")
 
         # Compute mean/std for diagnostics using torch operations (avoid overflow)
