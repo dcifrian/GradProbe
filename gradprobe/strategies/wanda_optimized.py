@@ -160,18 +160,26 @@ class WANDAPruningOptimized(PruningStrategy):
             p = 1 - sparsity
             sign = 1
 
+        log_memory(f"Normal approximation: sparsity={sparsity:.6f}, p={p:.6f}, sign={sign}")
+
         if p > 0.0 and p < 1.0:
             t = (-2 * torch.log(torch.tensor(p))) ** 0.5
             c0, c1, c2 = 2.515517, 0.802853, 0.010328
             d1, d2, d3 = 1.432788, 0.189269, 0.001308
             z_approx = sign * (t - (c0 + c1*t + c2*t*t) / (1 + d1*t + d2*t*t + d3*t*t*t))
+            log_memory(f"z-score approximation: t={t:.6f}, z_approx={z_approx:.6f}")
         else:
             z_approx = 0.0
+            log_memory(f"z-score approximation: p out of range, z_approx=0.0")
 
-        initial_threshold = mean + z_approx * std
+        initial_threshold_unclamped = mean + z_approx * std
+        log_memory(f"Threshold before clamping: {initial_threshold_unclamped:.6f} = {mean:.6f} + {z_approx:.6f} * {std:.6f}")
 
         # Clamp to valid range
-        initial_threshold = max(min_val, min(max_val, initial_threshold))
+        initial_threshold = max(min_val, min(max_val, initial_threshold_unclamped))
+
+        if initial_threshold != initial_threshold_unclamped:
+            log_memory(f"WARNING: Threshold clamped from {initial_threshold_unclamped:.6f} to {initial_threshold:.6f}")
 
         # Binary search for optimal threshold
         log_memory(f"Binary search: initial_threshold={initial_threshold:.6f}, bounds=[{min_val:.6f}, {max_val:.6f}]")
@@ -190,6 +198,10 @@ class WANDAPruningOptimized(PruningStrategy):
 
             actual_sparsity = count_below / total_count
             error = abs(actual_sparsity - sparsity)
+
+            # Debug: print first few iterations
+            if iteration < 5:
+                log_memory(f"Iteration {iteration}: threshold={threshold:.6f}, actual_sparsity={actual_sparsity:.6f}, error={error:.6f}, bounds=[{low:.6f}, {high:.6f}]")
 
             if error < best_error:
                 best_error = error
