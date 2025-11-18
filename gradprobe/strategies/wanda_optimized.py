@@ -355,19 +355,22 @@ class WANDAPruningOptimized(PruningStrategy):
                 self._cached_sparsity = sparsity
                 log_memory(f"Cached histogram (coarse + fine) for future layers at sparsity={sparsity:.4f}")
             else:
-                # Low density - coarse estimate is good enough for this layer
-                # But still build fine histogram for caching (for future layers)
-                initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
-                log_memory(f"Using coarse estimate: threshold={initial_threshold:.6f}")
-
-                # Build fine histogram anyway for caching purposes
+                # Low density bin - but still use fine histogram for better accuracy
+                # Build fine histogram
                 fine_min = hist_min + coarse_bin_idx * bin_width_coarse
                 fine_max = hist_min + (coarse_bin_idx + 1) * bin_width_coarse
                 fine_eps = (fine_max - fine_min) * 1e-6
                 fine_min -= fine_eps
                 fine_max += fine_eps
 
-                log_memory(f"Building fine histogram for cache: [{fine_min:.6f}, {fine_max:.6f}] with {num_bins_fine} bins")
+                # Compute local target
+                if coarse_bin_idx > 0:
+                    values_below_target_bin = cumsum[coarse_bin_idx - 1].item()
+                else:
+                    values_below_target_bin = 0
+                fine_target = target_count - values_below_target_bin
+
+                log_memory(f"Pass 2: Zooming into [{fine_min:.6f}, {fine_max:.6f}] with {num_bins_fine} bins (low density), fine_target={fine_target:.0f}")
 
                 histogram_fine = torch.zeros(num_bins_fine)
                 for idx, (name, importance) in enumerate(importance_cache):
@@ -376,7 +379,34 @@ class WANDAPruningOptimized(PruningStrategy):
                     histogram_fine += hist
 
                 cumsum_fine = histogram_fine.cumsum(0)
-                bin_width_fine = (fine_max - fine_min) / num_bins_fine
+                fine_bin_idx = (cumsum_fine >= fine_target).nonzero(as_tuple=True)[0]
+
+                if len(fine_bin_idx) == 0:
+                    # Fallback to coarse estimate
+                    initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
+                    search_min = min_val
+                    search_max = max_val
+                    log_memory(f"Pass 2: Fine histogram failed, using coarse estimate with wide search")
+                else:
+                    fine_bin_idx = fine_bin_idx[0].item()
+                    bin_width_fine = (fine_max - fine_min) / num_bins_fine
+                    initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
+
+                    # Set tight bounds based on element count
+                    slack_percent = 0.01
+                    lower_target_fine = fine_target * (1 - slack_percent)
+                    upper_target_fine = fine_target * (1 + slack_percent)
+
+                    lower_bin_idx = (cumsum_fine >= lower_target_fine).nonzero(as_tuple=True)[0]
+                    upper_bin_idx = (cumsum_fine >= upper_target_fine).nonzero(as_tuple=True)[0]
+
+                    lower_bin = lower_bin_idx[0].item() if len(lower_bin_idx) > 0 else 0
+                    upper_bin = upper_bin_idx[0].item() if len(upper_bin_idx) > 0 else num_bins_fine - 1
+
+                    search_min = max(min_val, fine_min + lower_bin * bin_width_fine)
+                    search_max = min(max_val, fine_min + (upper_bin + 1) * bin_width_fine)
+
+                    log_memory(f"Pass 2: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}, search range: bins [{lower_bin}, {upper_bin}] (±{slack_percent*100:.0f}% elements)")
 
                 # Cache histogram (coarse + fine)
                 self._cached_histogram_info = {
@@ -419,6 +449,7 @@ class WANDAPruningOptimized(PruningStrategy):
 
         best_threshold = threshold
         best_error = float('inf')
+        prev_error = float('inf')
 
         for iteration in range(max_iterations):
             # Count weights below threshold (streaming through layers)
@@ -440,6 +471,30 @@ class WANDAPruningOptimized(PruningStrategy):
             if error < tolerance:
                 log_memory(f"Converged in {iteration+1} iterations: threshold={best_threshold:.6f}, error={best_error:.6f}")
                 break
+
+            # Check if we're stuck near an edge with poor error
+            # This happens when cached histogram doesn't match actual distribution
+            if iteration > 2 and error > tolerance:
+                range_width = high - low
+                # Check if we're close to edges (within 20% of range from either end)
+                near_lower_edge = (threshold - low) < (range_width * 0.2)
+                near_upper_edge = (high - threshold) < (range_width * 0.2)
+
+                # If error isn't improving and we're near an edge, expand the range
+                error_not_improving = abs(error - prev_error) < tolerance * 0.1
+
+                if error_not_improving and near_lower_edge and actual_sparsity < sparsity:
+                    # Need lower threshold but stuck at lower edge - expand downward
+                    expansion = max(range_width * 0.5, (high - low) * 0.1)
+                    low = max(min_val, low - expansion)
+                    log_memory(f"Expanding downward: new range [{low:.6f}, {high:.6f}]")
+                elif error_not_improving and near_upper_edge and actual_sparsity > sparsity:
+                    # Need higher threshold but stuck at upper edge - expand upward
+                    expansion = max(range_width * 0.5, (high - low) * 0.1)
+                    high = min(max_val, high + expansion)
+                    log_memory(f"Expanding upward: new range [{low:.6f}, {high:.6f}]")
+
+            prev_error = error
 
             # Binary search update
             if actual_sparsity < sparsity:
