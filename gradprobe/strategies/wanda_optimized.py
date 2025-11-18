@@ -1,0 +1,428 @@
+"""
+Optimized WANDA pruning strategy using statistical threshold estimation.
+
+This is a drop-in replacement for wanda.py that uses mean/std + binary search
+instead of topk, providing significant speedup and memory savings.
+"""
+
+from typing import Dict, List, Tuple
+import torch
+import torch.nn as nn
+import psutil
+import time
+import gc
+
+from .base import PruningStrategy
+
+
+def log_memory(msg, log_file="/tmp/wanda_optimized_memory.log"):
+    """Log current memory usage to file."""
+    process = psutil.Process()
+    rss_gb = process.memory_info().rss / (1024**3)
+    vms_gb = process.memory_info().vms / (1024**3)
+
+    if torch.cuda.is_available():
+        vram_gb = torch.cuda.memory_allocated() / (1024**3)
+        vram_reserved_gb = torch.cuda.memory_reserved() / (1024**3)
+        log_line = f"[{time.strftime('%H:%M:%S')}] {msg} | RAM: {rss_gb:.2f}GB (VMS: {vms_gb:.2f}GB) | VRAM: {vram_gb:.2f}GB (Reserved: {vram_reserved_gb:.2f}GB)\n"
+    else:
+        log_line = f"[{time.strftime('%H:%M:%S')}] {msg} | RAM: {rss_gb:.2f}GB (VMS: {vms_gb:.2f}GB)\n"
+
+    with open(log_file, 'a') as f:
+        f.write(log_line)
+    print(log_line.strip())
+
+
+class WANDAPruningOptimized(PruningStrategy):
+    """
+    Optimized WANDA pruning strategy.
+
+    Uses streaming statistics (mean/std) + binary search instead of topk
+    to find the pruning threshold. This avoids concatenating all importance scores
+    into one large tensor, saving memory and providing speedup.
+    """
+
+    def __init__(self, dataloader: torch.utils.data.DataLoader, num_batches: int = 10):
+        """
+        Initialize WANDA pruning strategy.
+
+        Args:
+            dataloader: DataLoader to sample activations from
+            num_batches: Number of batches to use for activation computation
+        """
+        self.dataloader = dataloader
+        self.num_batches = num_batches
+        self._cached_activation_norms = None  # Cache activations to avoid recomputation
+
+    def select_weights_to_prune(
+        self,
+        model: nn.Module,
+        sparsity: float,
+        max_iterations: int = 20,
+        tolerance: float = 0.0001
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Select weights to prune based on WANDA importance scores.
+
+        Uses streaming statistics to estimate threshold without large memory allocation.
+
+        Args:
+            model: The neural network model to analyze
+            sparsity: Target sparsity level (fraction of weights to prune, 0-1)
+            max_iterations: Maximum binary search iterations (default: 20)
+            tolerance: Target sparsity tolerance (default: 0.0001 = 0.01%)
+
+        Returns:
+            Dictionary mapping parameter names to boolean masks where True indicates
+            the weight should be tentatively pruned
+        """
+        log_memory("START: Entering select_weights_to_prune")
+
+        if not 0 <= sparsity <= 1:
+            raise ValueError(f"Sparsity must be between 0 and 1, got {sparsity}")
+
+        # Collect activations for each layer (cache to avoid recomputation in iterative pruning)
+        if self._cached_activation_norms is None:
+            log_memory("Before collecting activation norms (first time)")
+            activation_norms = self._collect_activation_norms(model)
+            self._cached_activation_norms = activation_norms  # Cache for future calls
+            log_memory(f"After collecting activation norms for {len(activation_norms)} layers (cached)")
+        else:
+            log_memory("Using cached activation norms (skipping re-collection)")
+            activation_norms = self._cached_activation_norms
+
+        if not activation_norms:
+            # Fall back to magnitude-only if no activations collected
+            return self._magnitude_only_fallback(model, sparsity, max_iterations, tolerance)
+
+        # Collect parameter info
+        log_memory("Before collecting parameters")
+        param_list = []
+
+        for name, param in model.named_parameters():
+            if param.requires_grad and len(param.shape) >= 2:  # Weight matrices only
+                param_list.append((name, param))
+
+        log_memory(f"After collecting {len(param_list)} parameters")
+
+        if not param_list:
+            return {}
+
+        if sparsity == 0:
+            # Return empty masks (no pruning)
+            masks = {}
+            for name, param in param_list:
+                masks[name] = torch.zeros(param.shape, dtype=torch.bool, device='cpu')
+            for name, param in model.named_parameters():
+                if name not in masks:
+                    masks[name] = torch.zeros(param.shape, dtype=torch.bool, device='cpu')
+            return masks
+
+        # Pass 1: Compute global statistics (streaming, no concatenation!)
+        log_memory("Computing global statistics (streaming)")
+        total_count = 0
+        total_sum = 0.0
+        total_sum_sq = 0.0
+        importance_cache = []
+
+        for name, param in param_list:
+            # Compute WANDA importance: |W| * ||X||
+            if name in activation_norms:
+                act_norm = activation_norms[name].cpu()
+                if len(param.shape) == 2:
+                    act_norm_expanded = act_norm.unsqueeze(0)
+                    importance = param.data.abs().cpu() * act_norm_expanded
+                else:
+                    importance = param.data.abs().cpu()
+            else:
+                # No activation data, use magnitude only
+                importance = param.data.abs().cpu()
+
+            importance_cache.append((name, importance))
+
+            # Update running statistics
+            total_count += importance.numel()
+            total_sum += importance.sum().item()
+            total_sum_sq += (importance ** 2).sum().item()
+
+        # Compute global mean and std
+        mean = total_sum / total_count
+        variance = (total_sum_sq / total_count) - (mean ** 2)
+        std = (variance ** 0.5)
+        target_count = int(sparsity * total_count)
+
+        log_memory(f"Statistics: mean={mean:.6f}, std={std:.6f}, target_count={target_count}")
+
+        # Initial threshold estimate using normal approximation
+        if sparsity < 0.5:
+            p = sparsity
+            sign = -1
+        else:
+            p = 1 - sparsity
+            sign = 1
+
+        if p > 0.0 and p < 1.0:
+            t = (-2 * torch.log(torch.tensor(p))) ** 0.5
+            c0, c1, c2 = 2.515517, 0.802853, 0.010328
+            d1, d2, d3 = 1.432788, 0.189269, 0.001308
+            z_approx = sign * (t - (c0 + c1*t + c2*t*t) / (1 + d1*t + d2*t*t + d3*t*t*t))
+        else:
+            z_approx = 0.0
+
+        initial_threshold = mean + z_approx * std
+
+        # Find min/max across all layers for bounds
+        min_val = min(importance.min().item() for _, importance in importance_cache)
+        max_val = max(importance.max().item() for _, importance in importance_cache)
+
+        # Binary search for optimal threshold
+        log_memory(f"Binary search: initial_threshold={initial_threshold:.6f}, bounds=[{min_val:.6f}, {max_val:.6f}]")
+        low = min_val
+        high = max_val
+        threshold = max(low, min(high, initial_threshold))
+
+        best_threshold = threshold
+        best_error = float('inf')
+
+        for iteration in range(max_iterations):
+            # Count weights below threshold (streaming through layers)
+            count_below = 0
+            for _, importance in importance_cache:
+                count_below += (importance <= threshold).sum().item()
+
+            actual_sparsity = count_below / total_count
+            error = abs(actual_sparsity - sparsity)
+
+            if error < best_error:
+                best_error = error
+                best_threshold = threshold
+
+            if error < tolerance:
+                log_memory(f"Converged in {iteration+1} iterations: threshold={best_threshold:.6f}, error={best_error:.6f}")
+                break
+
+            # Binary search update
+            if actual_sparsity < sparsity:
+                low = threshold
+            else:
+                high = threshold
+
+            threshold = (low + high) / 2
+
+            if abs(high - low) < 1e-10:
+                log_memory(f"Search range collapsed in {iteration+1} iterations")
+                break
+        else:
+            log_memory(f"Max iterations reached: threshold={best_threshold:.6f}, error={best_error:.6f}")
+
+        # Create masks with best threshold
+        log_memory("Creating masks")
+        masks = {}
+        for name, importance in importance_cache:
+            masks[name] = importance <= best_threshold
+
+        log_memory(f"After creating all {len(masks)} masks")
+
+        # Add non-prunable parameters with zero masks
+        for name, param in model.named_parameters():
+            if name not in masks:
+                masks[name] = torch.zeros(param.shape, dtype=torch.bool, device='cpu')
+
+        log_memory(f"END: Returning {len(masks)} masks")
+        return masks
+
+    def _collect_activation_norms(self, model: nn.Module) -> Dict[str, torch.Tensor]:
+        """
+        Collect activation norms for each layer by running forward passes.
+
+        Returns:
+            Dictionary mapping parameter names to activation norms
+        """
+        activations = {}
+        hooks = []
+
+        def create_hook(name, module):
+            def hook(module, input, output):
+                # input is a tuple, get the first element
+                if isinstance(input, tuple):
+                    inp = input[0]
+                else:
+                    inp = input
+
+                # Handle different input shapes
+                # For Linear: input can be [batch, ...any..., in_features]
+                # We want norm per in_features dimension
+
+                # Get the expected input dimension from the module
+                if isinstance(module, nn.Linear):
+                    in_features = module.in_features
+                    # Reshape to [batch * other_dims, in_features]
+                    inp_reshaped = inp.reshape(-1, in_features)
+                    # Compute norm across batch dimension, get [in_features]
+                    norm = torch.norm(inp_reshaped, p=2, dim=0)
+                elif isinstance(module, (nn.Conv1d, nn.Conv2d)):
+                    # For conv layers, take norm across spatial dimensions
+                    # Input: [batch, channels, ...spatial...]
+                    batch_size = inp.shape[0]
+                    channels = inp.shape[1]
+                    inp_reshaped = inp.reshape(batch_size, channels, -1)
+                    norm = torch.norm(inp_reshaped, p=2, dim=(0, 2))  # [channels]
+                else:
+                    # Fallback: flatten and take norm
+                    inp_flat = inp.reshape(inp.shape[0], -1)
+                    norm = torch.norm(inp_flat, p=2, dim=0)
+
+                if name not in activations:
+                    activations[name] = norm
+                else:
+                    # Accumulate (take max across batches)
+                    activations[name] = torch.maximum(activations[name], norm)
+            return hook
+
+        # Register hooks for all linear/conv layers
+        for name, module in model.named_modules():
+            if isinstance(module, (nn.Linear, nn.Conv1d, nn.Conv2d)):
+                # Map module name to parameter name
+                # For nn.Linear, the weight is name.weight
+                param_name = f"{name}.weight"
+                hook = module.register_forward_hook(create_hook(param_name, module))
+                hooks.append(hook)
+
+        # Run forward passes
+        model.eval()
+
+        # Detect model device from first parameter
+        device = next(model.parameters()).device
+
+        batch_count = 0
+        with torch.no_grad():
+            for batch in self.dataloader:
+                if batch_count >= self.num_batches:
+                    break
+
+                # Handle different batch formats and move to model device
+                if isinstance(batch, (tuple, list)):
+                    inputs = batch[0].to(device)
+                else:
+                    inputs = batch.to(device)
+
+                # Forward pass
+                try:
+                    model(inputs)
+                except Exception:
+                    # If forward fails, skip this batch
+                    pass
+
+                batch_count += 1
+
+        # Remove hooks
+        for hook in hooks:
+            hook.remove()
+
+        return activations
+
+    def _magnitude_only_fallback(
+        self,
+        model: nn.Module,
+        sparsity: float,
+        max_iterations: int,
+        tolerance: float
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Fallback to magnitude-only pruning if activation collection fails.
+        Uses the same optimized streaming approach.
+        """
+        log_memory("Fallback to magnitude-only (optimized)")
+
+        # Collect parameters
+        param_list = []
+        for name, param in model.named_parameters():
+            if param.requires_grad and len(param.shape) >= 2:
+                param_list.append((name, param))
+
+        if not param_list:
+            return {}
+
+        # Streaming statistics
+        total_count = 0
+        total_sum = 0.0
+        total_sum_sq = 0.0
+        importance_cache = []
+
+        for name, param in param_list:
+            importance = param.data.abs().cpu()
+            importance_cache.append((name, importance))
+
+            total_count += importance.numel()
+            total_sum += importance.sum().item()
+            total_sum_sq += (importance ** 2).sum().item()
+
+        mean = total_sum / total_count
+        variance = (total_sum_sq / total_count) - (mean ** 2)
+        std = (variance ** 0.5)
+
+        # Normal approximation for initial threshold
+        if sparsity < 0.5:
+            p = sparsity
+            sign = -1
+        else:
+            p = 1 - sparsity
+            sign = 1
+
+        if p > 0.0 and p < 1.0:
+            t = (-2 * torch.log(torch.tensor(p))) ** 0.5
+            c0, c1, c2 = 2.515517, 0.802853, 0.010328
+            d1, d2, d3 = 1.432788, 0.189269, 0.001308
+            z_approx = sign * (t - (c0 + c1*t + c2*t*t) / (1 + d1*t + d2*t*t + d3*t*t*t))
+        else:
+            z_approx = 0.0
+
+        initial_threshold = mean + z_approx * std
+
+        # Binary search
+        min_val = min(importance.min().item() for _, importance in importance_cache)
+        max_val = max(importance.max().item() for _, importance in importance_cache)
+        low = min_val
+        high = max_val
+        threshold = max(low, min(high, initial_threshold))
+
+        best_threshold = threshold
+        best_error = float('inf')
+
+        for iteration in range(max_iterations):
+            count_below = sum((importance <= threshold).sum().item() for _, importance in importance_cache)
+            actual_sparsity = count_below / total_count
+            error = abs(actual_sparsity - sparsity)
+
+            if error < best_error:
+                best_error = error
+                best_threshold = threshold
+
+            if error < tolerance:
+                break
+
+            if actual_sparsity < sparsity:
+                low = threshold
+            else:
+                high = threshold
+
+            threshold = (low + high) / 2
+
+            if abs(high - low) < 1e-10:
+                break
+
+        # Create masks
+        masks = {}
+        for name, importance in importance_cache:
+            masks[name] = importance <= best_threshold
+
+        # Add non-prunable parameters
+        for name, param in model.named_parameters():
+            if name not in masks:
+                masks[name] = torch.zeros(param.shape, dtype=torch.bool, device='cpu')
+
+        return masks
+
+    def get_name(self) -> str:
+        """Return the name of this pruning strategy."""
+        return "WANDA_optimized"
