@@ -9,6 +9,7 @@ from typing import Dict, Optional, Callable, Tuple
 import torch
 import torch.nn as nn
 from copy import deepcopy
+import gc
 
 from .strategies.base import PruningStrategy
 
@@ -1840,6 +1841,10 @@ class GradProbe:
                 if name in new_masks:
                     cumulative_masks[name] = cumulative_masks[name] | new_masks[name]
 
+            # Explicitly delete new_masks to free memory immediately
+            del new_masks
+            gc.collect()
+
             # Apply cumulative masks
             for name, param in self.model.named_parameters():
                 if name in cumulative_masks:
@@ -1904,6 +1909,13 @@ class GradProbe:
                 for name, param in self.model.named_parameters():
                     if name in gradient_state:
                         param.data.copy_(gradient_state[name])
+
+                # Explicitly delete comparison artifacts to free memory
+                del gradient_state
+                del strategy_masks
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             # Check if sparsity is not increasing
             sparsity_increase = actual_sparsity - previous_sparsity
@@ -2044,6 +2056,11 @@ class GradProbe:
 
             if verbose:
                 print()
+
+            # Force garbage collection and free GPU memory between iterations
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             # Increase sparsity for next iteration
             current_sparsity += sparsity_step
