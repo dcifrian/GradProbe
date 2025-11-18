@@ -28,11 +28,18 @@ input_ids = tokens['input_ids']
 dataset = [(input_ids, input_ids)]  # (input, target) tuples
 dataloader = DataLoader(dataset, batch_size=1)
 
-# Loss function
-def loss_fn(model, batch):
-    inputs, targets = batch
-    outputs = model(inputs, labels=targets)
-    return outputs.loss
+# Loss function (must match pruner's expected signature: loss_fn(outputs, targets))
+def loss_fn(outputs, targets):
+    # outputs is the model output, targets is the shifted input
+    if hasattr(outputs, 'logits'):
+        logits = outputs.logits
+    else:
+        logits = outputs
+    # Shift targets for next-token prediction
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = targets[..., 1:].contiguous()
+    loss_fct = torch.nn.CrossEntropyLoss()
+    return loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
 
 # Create pruner with WANDA strategy
 wanda = WANDAPruning(dataloader=dataloader, num_batches=1)
