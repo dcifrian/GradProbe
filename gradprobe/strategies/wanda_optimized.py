@@ -53,6 +53,11 @@ class WANDAPruningOptimized(PruningStrategy):
         self.dataloader = dataloader
         self.num_batches = num_batches
         self._cached_activation_norms = None  # Cache activations to avoid recomputation
+        self._cached_histogram_info = None  # Cache histogram for layerwise pruning speedup
+
+    def clear_histogram_cache(self):
+        """Clear cached histogram info. Call this when starting a new pruning run."""
+        self._cached_histogram_info = None
 
     def select_weights_to_prune(
         self,
@@ -152,102 +157,205 @@ class WANDAPruningOptimized(PruningStrategy):
         zero_count = sum((imp == 0).sum().item() for _, imp in importance_cache)
         log_memory(f"Importance dtype: {first_dtype}, zeros: {zero_count}/{total_count} ({zero_count/total_count*100:.1f}%)")
 
-        # Build histogram to estimate initial threshold
+        # Build histogram to estimate initial threshold (or use cached histogram)
         # Use two-pass approach for bimodal distributions:
         # Pass 1: Coarse histogram to find which region target is in
         # Pass 2: If bin is heavily populated, zoom in with fine histogram
         num_bins_coarse = 1000
         num_bins_fine = 10000
-        histogram = torch.zeros(num_bins_coarse)
-        eps = (max_val - min_val) * 1e-6 if max_val > min_val else 1e-6
-        hist_min = min_val - eps
-        hist_max = max_val + eps
 
-        log_memory(f"Pass 1: Coarse histogram with {num_bins_coarse} bins, range=[{hist_min:.6f}, {hist_max:.6f}]")
-        for idx, (name, importance) in enumerate(importance_cache):
-            importance_f32 = importance.float()
-            hist = torch.histc(importance_f32, bins=num_bins_coarse, min=hist_min, max=hist_max)
-            histogram += hist
+        # Check if we have cached histogram (for layerwise pruning speedup)
+        if self._cached_histogram_info is not None:
+            # Use cached histogram structure from first layer
+            log_memory(f"Using cached histogram from first layer (skipping torch.histc)")
+            cached = self._cached_histogram_info
+            histogram = cached['histogram']
+            cumsum = cached['cumsum']
+            hist_min = cached['hist_min']
+            hist_max = cached['hist_max']
+            bin_width_coarse = cached['bin_width_coarse']
 
-        # Find which bin contains the target percentile
-        cumsum = histogram.cumsum(0)
-        coarse_bin_idx = (cumsum >= target_count).nonzero(as_tuple=True)[0]
-
-        if len(coarse_bin_idx) == 0:
-            raise RuntimeError(f"Coarse histogram failed: cumsum never reached target_count")
-
-        coarse_bin_idx = coarse_bin_idx[0].item()
-        bin_width_coarse = (hist_max - hist_min) / num_bins_coarse
-
-        # Check if this bin is heavily populated (>10% of total values)
-        bin_count = histogram[coarse_bin_idx].item()
-        bin_density = bin_count / total_count
-
-        log_memory(f"Pass 1: Target in bin {coarse_bin_idx}/{num_bins_coarse}, bin density={bin_density*100:.1f}%")
-
-        # Track bounds for binary search
-        search_min = min_val
-        search_max = max_val
-
-        if bin_density > 0.1:
-            # Heavily populated bin - zoom in with fine histogram
-            fine_min = hist_min + coarse_bin_idx * bin_width_coarse
-            fine_max = hist_min + (coarse_bin_idx + 1) * bin_width_coarse
-            fine_eps = (fine_max - fine_min) * 1e-6
-            fine_min -= fine_eps
-            fine_max += fine_eps
-
-            # Compute local target: subtract values in previous bins
-            if coarse_bin_idx > 0:
-                values_below_target_bin = cumsum[coarse_bin_idx - 1].item()
+            # Use cached histogram to find target bin
+            coarse_bin_idx = (cumsum >= target_count).nonzero(as_tuple=True)[0]
+            if len(coarse_bin_idx) == 0:
+                # Distribution shifted significantly - fallback to full histogram
+                log_memory(f"Cached histogram insufficient, rebuilding...")
+                self._cached_histogram_info = None
+                # Will rebuild below
             else:
-                values_below_target_bin = 0
+                coarse_bin_idx = coarse_bin_idx[0].item()
+                bin_count = histogram[coarse_bin_idx].item()
+                bin_density = bin_count / total_count
+                log_memory(f"Cached: Target in bin {coarse_bin_idx}/{num_bins_coarse}, bin density={bin_density*100:.1f}%")
 
-            fine_target = target_count - values_below_target_bin
+                # Track bounds for binary search
+                search_min = min_val
+                search_max = max_val
 
-            log_memory(f"Pass 2: Zooming into [{fine_min:.6f}, {fine_max:.6f}] with {num_bins_fine} bins, fine_target={fine_target:.0f}")
+                # Check if cached fine histogram exists
+                if bin_density > 0.1 and 'histogram_fine' in cached:
+                    # Use cached fine histogram
+                    histogram_fine = cached['histogram_fine']
+                    cumsum_fine = cached['cumsum_fine']
+                    fine_min = cached['fine_min']
+                    fine_max = cached['fine_max']
+                    bin_width_fine = cached['bin_width_fine']
 
-            histogram_fine = torch.zeros(num_bins_fine)
+                    # Compute local target
+                    if coarse_bin_idx > 0:
+                        values_below_target_bin = cumsum[coarse_bin_idx - 1].item()
+                    else:
+                        values_below_target_bin = 0
+                    fine_target = target_count - values_below_target_bin
+
+                    # Find threshold in cached fine histogram
+                    fine_bin_idx = (cumsum_fine >= fine_target).nonzero(as_tuple=True)[0]
+
+                    if len(fine_bin_idx) == 0:
+                        # Fine histogram cache invalid - use coarse
+                        initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
+                        log_memory(f"Cached fine histogram insufficient, using coarse estimate: threshold={initial_threshold:.6f}")
+                    else:
+                        fine_bin_idx = fine_bin_idx[0].item()
+                        initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
+
+                        # Set tight bounds based on element count
+                        slack_percent = 0.01
+                        lower_target_fine = fine_target * (1 - slack_percent)
+                        upper_target_fine = fine_target * (1 + slack_percent)
+
+                        lower_bin_idx = (cumsum_fine >= lower_target_fine).nonzero(as_tuple=True)[0]
+                        upper_bin_idx = (cumsum_fine >= upper_target_fine).nonzero(as_tuple=True)[0]
+
+                        lower_bin = lower_bin_idx[0].item() if len(lower_bin_idx) > 0 else 0
+                        upper_bin = upper_bin_idx[0].item() if len(upper_bin_idx) > 0 else num_bins_fine - 1
+
+                        search_min = max(min_val, fine_min + lower_bin * bin_width_fine)
+                        search_max = min(max_val, fine_min + (upper_bin + 1) * bin_width_fine)
+
+                        log_memory(f"Cached: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}, search range: bins [{lower_bin}, {upper_bin}]")
+                else:
+                    # Use coarse estimate from cached histogram
+                    initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
+                    log_memory(f"Cached: Using coarse estimate: threshold={initial_threshold:.6f}")
+
+        # Build histogram from scratch if no cache or cache was invalid
+        if self._cached_histogram_info is None:
+            histogram = torch.zeros(num_bins_coarse)
+            eps = (max_val - min_val) * 1e-6 if max_val > min_val else 1e-6
+            hist_min = min_val - eps
+            hist_max = max_val + eps
+
+            log_memory(f"Pass 1: Coarse histogram with {num_bins_coarse} bins, range=[{hist_min:.6f}, {hist_max:.6f}]")
             for idx, (name, importance) in enumerate(importance_cache):
                 importance_f32 = importance.float()
-                hist = torch.histc(importance_f32, bins=num_bins_fine, min=fine_min, max=fine_max)
-                histogram_fine += hist
+                hist = torch.histc(importance_f32, bins=num_bins_coarse, min=hist_min, max=hist_max)
+                histogram += hist
 
-            # Find threshold in fine histogram using local target
-            cumsum_fine = histogram_fine.cumsum(0)
-            fine_bin_idx = (cumsum_fine >= fine_target).nonzero(as_tuple=True)[0]
+            # Find which bin contains the target percentile
+            cumsum = histogram.cumsum(0)
+            coarse_bin_idx = (cumsum >= target_count).nonzero(as_tuple=True)[0]
 
-            if len(fine_bin_idx) == 0:
-                raise RuntimeError(f"Fine histogram failed: cumsum never reached fine_target. "
-                                 f"fine_cumsum[-1]={cumsum_fine[-1].item():.0f}, fine_target={fine_target:.0f}, "
-                                 f"values_below={values_below_target_bin:.0f}, global_target={target_count}")
+            if len(coarse_bin_idx) == 0:
+                raise RuntimeError(f"Coarse histogram failed: cumsum never reached target_count")
 
-            fine_bin_idx = fine_bin_idx[0].item()
-            bin_width_fine = (fine_max - fine_min) / num_bins_fine
-            initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
+            coarse_bin_idx = coarse_bin_idx[0].item()
+            bin_width_coarse = (hist_max - hist_min) / num_bins_coarse
 
-            # Set binary search bounds based on element count, not bin count
-            # Allow ±1% slack in sparsity (e.g., 9-11% for 10% target)
-            # This adapts to density - tight in dense regions, wider in sparse regions
-            slack_percent = 0.01
-            lower_target_fine = fine_target * (1 - slack_percent)
-            upper_target_fine = fine_target * (1 + slack_percent)
+            # Check if this bin is heavily populated (>10% of total values)
+            bin_count = histogram[coarse_bin_idx].item()
+            bin_density = bin_count / total_count
 
-            # Find bins that bracket these element counts
-            lower_bin_idx = (cumsum_fine >= lower_target_fine).nonzero(as_tuple=True)[0]
-            upper_bin_idx = (cumsum_fine >= upper_target_fine).nonzero(as_tuple=True)[0]
+            log_memory(f"Pass 1: Target in bin {coarse_bin_idx}/{num_bins_coarse}, bin density={bin_density*100:.1f}%")
 
-            lower_bin = lower_bin_idx[0].item() if len(lower_bin_idx) > 0 else 0
-            upper_bin = upper_bin_idx[0].item() if len(upper_bin_idx) > 0 else num_bins_fine - 1
+            # Track bounds for binary search
+            search_min = min_val
+            search_max = max_val
 
-            search_min = max(min_val, fine_min + lower_bin * bin_width_fine)
-            search_max = min(max_val, fine_min + (upper_bin + 1) * bin_width_fine)
+            if bin_density > 0.1:
+                # Heavily populated bin - zoom in with fine histogram
+                fine_min = hist_min + coarse_bin_idx * bin_width_coarse
+                fine_max = hist_min + (coarse_bin_idx + 1) * bin_width_coarse
+                fine_eps = (fine_max - fine_min) * 1e-6
+                fine_min -= fine_eps
+                fine_max += fine_eps
 
-            log_memory(f"Pass 2: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}, search range: bins [{lower_bin}, {upper_bin}] (±{slack_percent*100:.0f}% elements)")
-        else:
-            # Low density - coarse estimate is good enough
-            initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
-            log_memory(f"Using coarse estimate: threshold={initial_threshold:.6f}")
+                # Compute local target: subtract values in previous bins
+                if coarse_bin_idx > 0:
+                    values_below_target_bin = cumsum[coarse_bin_idx - 1].item()
+                else:
+                    values_below_target_bin = 0
+
+                fine_target = target_count - values_below_target_bin
+
+                log_memory(f"Pass 2: Zooming into [{fine_min:.6f}, {fine_max:.6f}] with {num_bins_fine} bins, fine_target={fine_target:.0f}")
+
+                histogram_fine = torch.zeros(num_bins_fine)
+                for idx, (name, importance) in enumerate(importance_cache):
+                    importance_f32 = importance.float()
+                    hist = torch.histc(importance_f32, bins=num_bins_fine, min=fine_min, max=fine_max)
+                    histogram_fine += hist
+
+                # Find threshold in fine histogram using local target
+                cumsum_fine = histogram_fine.cumsum(0)
+                fine_bin_idx = (cumsum_fine >= fine_target).nonzero(as_tuple=True)[0]
+
+                if len(fine_bin_idx) == 0:
+                    raise RuntimeError(f"Fine histogram failed: cumsum never reached fine_target. "
+                                     f"fine_cumsum[-1]={cumsum_fine[-1].item():.0f}, fine_target={fine_target:.0f}, "
+                                     f"values_below={values_below_target_bin:.0f}, global_target={target_count}")
+
+                fine_bin_idx = fine_bin_idx[0].item()
+                bin_width_fine = (fine_max - fine_min) / num_bins_fine
+                initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
+
+                # Set binary search bounds based on element count, not bin count
+                # Allow ±1% slack in sparsity (e.g., 9-11% for 10% target)
+                # This adapts to density - tight in dense regions, wider in sparse regions
+                slack_percent = 0.01
+                lower_target_fine = fine_target * (1 - slack_percent)
+                upper_target_fine = fine_target * (1 + slack_percent)
+
+                # Find bins that bracket these element counts
+                lower_bin_idx = (cumsum_fine >= lower_target_fine).nonzero(as_tuple=True)[0]
+                upper_bin_idx = (cumsum_fine >= upper_target_fine).nonzero(as_tuple=True)[0]
+
+                lower_bin = lower_bin_idx[0].item() if len(lower_bin_idx) > 0 else 0
+                upper_bin = upper_bin_idx[0].item() if len(upper_bin_idx) > 0 else num_bins_fine - 1
+
+                search_min = max(min_val, fine_min + lower_bin * bin_width_fine)
+                search_max = min(max_val, fine_min + (upper_bin + 1) * bin_width_fine)
+
+                log_memory(f"Pass 2: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}, search range: bins [{lower_bin}, {upper_bin}] (±{slack_percent*100:.0f}% elements)")
+
+                # Cache histogram with fine resolution
+                self._cached_histogram_info = {
+                    'histogram': histogram,
+                    'cumsum': cumsum,
+                    'hist_min': hist_min,
+                    'hist_max': hist_max,
+                    'bin_width_coarse': bin_width_coarse,
+                    'histogram_fine': histogram_fine,
+                    'cumsum_fine': cumsum_fine,
+                    'fine_min': fine_min,
+                    'fine_max': fine_max,
+                    'bin_width_fine': bin_width_fine
+                }
+                log_memory(f"Cached histogram (coarse + fine) for future layers")
+            else:
+                # Low density - coarse estimate is good enough
+                initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
+                log_memory(f"Using coarse estimate: threshold={initial_threshold:.6f}")
+
+                # Cache histogram (coarse only)
+                self._cached_histogram_info = {
+                    'histogram': histogram,
+                    'cumsum': cumsum,
+                    'hist_min': hist_min,
+                    'hist_max': hist_max,
+                    'bin_width_coarse': bin_width_coarse
+                }
+                log_memory(f"Cached histogram (coarse only) for future layers")
 
         # Clamp to actual data range
         initial_threshold = max(min_val, min(max_val, initial_threshold))
