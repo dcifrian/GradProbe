@@ -472,8 +472,17 @@ class WANDAPruningOptimized(PruningStrategy):
                 log_memory(f"Converged in {iteration+1} iterations: threshold={best_threshold:.6f}, error={best_error:.6f}")
                 break
 
+            prev_error = error
+
+            # Binary search update (must happen BEFORE edge expansion check)
+            if actual_sparsity < sparsity:
+                low = threshold
+            else:
+                high = threshold
+
             # Check if we're stuck with poor error that's not improving
             # This happens when cached histogram doesn't match actual distribution
+            # IMPORTANT: This must happen AFTER binary search update to avoid being overwritten
             if iteration > 2 and error > tolerance * 10:
                 error_not_improving = abs(error - prev_error) < tolerance * 0.01
 
@@ -487,42 +496,44 @@ class WANDAPruningOptimized(PruningStrategy):
                     # Are we stuck near the upper side of valid range?
                     near_upper_side = (max_val - low) < (total_width * 0.1)
 
+                    expanded = False
                     if near_lower_side and actual_sparsity < sparsity:
-                        # Need more pruning (lower threshold) but stuck near bottom - expand downward
+                        # Need more pruning (higher threshold) but stuck near bottom - expand upward
                         expansion = total_width * 0.1  # Expand by 10% of total width
-                        new_low = max(min_val, low - expansion)
-                        if new_low < low:
-                            low = new_low
-                            log_memory(f"Error stuck at {error:.6f}, both ends near lower side, expanding downward: [{low:.6f}, {high:.6f}]")
+                        new_high = min(max_val, high + expansion)
+                        if new_high > high:
+                            high = new_high
+                            expanded = True
+                            log_memory(f"Error stuck at {error:.6f}, both ends near lower side, expanding upward: [{low:.6f}, {high:.6f}]")
                     elif near_upper_side and actual_sparsity > sparsity:
-                        # Need less pruning (higher threshold) but stuck near top - expand upward
+                        # Need less pruning (lower threshold) but stuck near top - expand downward
                         expansion = total_width * 0.1
+                        new_low = max(min_val, low - expansion)
+                        if new_low < low:
+                            low = new_low
+                            expanded = True
+                            log_memory(f"Error stuck at {error:.6f}, both ends near upper side, expanding downward: [{low:.6f}, {high:.6f}]")
+                    elif actual_sparsity < sparsity:
+                        # General case: need more pruning (higher threshold), expand upward
+                        expansion = max(range_width * 2.0, total_width * 0.05)
                         new_high = min(max_val, high + expansion)
                         if new_high > high:
                             high = new_high
-                            log_memory(f"Error stuck at {error:.6f}, both ends near upper side, expanding upward: [{low:.6f}, {high:.6f}]")
-                    elif actual_sparsity < sparsity:
-                        # General case: need more pruning, expand downward
+                            expanded = True
+                            log_memory(f"Error stuck at {error:.6f}, expanding upward: [{low:.6f}, {high:.6f}]")
+                    else:
+                        # General case: need less pruning (lower threshold), expand downward
                         expansion = max(range_width * 2.0, total_width * 0.05)
                         new_low = max(min_val, low - expansion)
                         if new_low < low:
                             low = new_low
+                            expanded = True
                             log_memory(f"Error stuck at {error:.6f}, expanding downward: [{low:.6f}, {high:.6f}]")
-                    else:
-                        # General case: need less pruning, expand upward
-                        expansion = max(range_width * 2.0, total_width * 0.05)
-                        new_high = min(max_val, high + expansion)
-                        if new_high > high:
-                            high = new_high
-                            log_memory(f"Error stuck at {error:.6f}, expanding upward: [{low:.6f}, {high:.6f}]")
 
-            prev_error = error
-
-            # Binary search update
-            if actual_sparsity < sparsity:
-                low = threshold
-            else:
-                high = threshold
+                    # If we couldn't expand (already at edge), give up to avoid infinite loop
+                    if not expanded:
+                        log_memory(f"Cannot expand further (at edge), accepting error={error:.6f}")
+                        break
 
             threshold = (low + high) / 2
 
