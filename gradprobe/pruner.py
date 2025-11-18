@@ -1229,14 +1229,6 @@ class GradProbe:
                     name: param.data.clone() for name, param in self.model.named_parameters()
                 }
 
-        # OPTIMIZATION: Call strategy once for all layers instead of once per layer
-        # This dramatically reduces redundant computation since weights haven't changed
-        if verbose:
-            print(f"\nComputing {self.strategy.get_name()} importance scores for all layers...")
-        cached_strategy_masks = self.strategy.select_weights_to_prune(self.model, sparsity)
-        if verbose:
-            print(f"Cached tentative masks for {len(cached_strategy_masks)} parameters")
-
         all_masks = {}
 
         # Accumulators for caching gradients and masks across all layers
@@ -1258,18 +1250,24 @@ class GradProbe:
                 if name != layer_name:
                     param.requires_grad = False
 
-            # Get cached tentative mask for this layer
-            if layer_name not in cached_strategy_masks:
+            # Recompute strategy masks for current model state (with previous layers pruned)
+            # This is the key difference from the "optimized" version that cached upfront
+            if verbose:
+                print(f"  Computing {self.strategy.get_name()} importance scores...")
+            full_strategy_masks = self.strategy.select_weights_to_prune(self.model, sparsity)
+
+            # Extract just this layer's mask
+            if layer_name not in full_strategy_masks:
                 # Shouldn't happen, but fallback to empty mask
                 all_masks[layer_name] = torch.zeros(layer_param.data.shape, dtype=torch.bool, device='cpu')
                 if verbose:
-                    print(f"  Warning: No cached mask for {layer_name}, skipping")
+                    print(f"  Warning: No mask for {layer_name}, skipping")
                 # Restore requires_grad
                 for name, param in self.model.named_parameters():
                     param.requires_grad = original_requires_grad[name]
                 continue
 
-            tentative_mask_for_layer = {layer_name: cached_strategy_masks[layer_name]}
+            tentative_mask_for_layer = {layer_name: full_strategy_masks[layer_name]}
 
             # Apply gradient filtering for this layer only
             layer_masks = self._apply_gradient_filtering_single_layer(
@@ -1284,6 +1282,15 @@ class GradProbe:
 
             # Store masks for this layer
             all_masks[layer_name] = layer_masks[layer_name]
+
+            # CRITICAL: Actually apply pruning to this layer before moving to next
+            # This allows next layer's WANDA/Magnitude to see the effect of pruning
+            layer_mask = layer_masks[layer_name]
+            if layer_mask.device != layer_param.device:
+                layer_mask_device = layer_mask.to(layer_param.device)
+            else:
+                layer_mask_device = layer_mask
+            layer_param.data[layer_mask_device] = 0
 
             # Accumulate cached gradients and masks from this layer
             # Skip caching in low_memory_mode to save GPU memory
