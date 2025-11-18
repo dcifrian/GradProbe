@@ -288,6 +288,245 @@ class MagnitudePruningOptimized(PruningStrategy):
         log_memory(f"END: Returning {len(masks)} masks")
         return masks
 
+    def select_weights_to_prune_layerwise(
+        self,
+        model: nn.Module,
+        sparsity: float,
+        max_iterations: int = 20,
+        tolerance: float = 0.001
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Select weights to prune with per-layer magnitude-based importance.
+
+        Unlike select_weights_to_prune which finds a global threshold,
+        this method computes per-layer thresholds using histogram-based
+        approach. Each layer achieves exactly the target sparsity.
+
+        Args:
+            model: The neural network model to analyze
+            sparsity: Target sparsity level per layer (fraction of weights to prune, 0-1)
+            max_iterations: Maximum binary search iterations per layer (default: 20)
+            tolerance: Target sparsity tolerance (default: 0.001 = 0.1%)
+
+        Returns:
+            Dictionary mapping parameter names to boolean masks where True indicates
+            the weight should be tentatively pruned
+        """
+        log_memory("START: Layerwise magnitude pruning")
+
+        if not 0 <= sparsity <= 1:
+            raise ValueError(f"Sparsity must be between 0 and 1, got {sparsity}")
+
+        # Collect all weight parameters
+        param_list = []
+        for name, param in model.named_parameters():
+            if param.requires_grad and len(param.shape) >= 2:
+                param_list.append((name, param))
+
+        log_memory(f"Processing {len(param_list)} layers")
+
+        if not param_list:
+            return {}
+
+        if sparsity == 0:
+            masks = {}
+            for name, param in param_list:
+                masks[name] = torch.zeros(param.shape, dtype=torch.bool, device='cpu')
+            for name, param in model.named_parameters():
+                if name not in masks:
+                    masks[name] = torch.zeros(param.shape, dtype=torch.bool, device='cpu')
+            return masks
+
+        all_masks = {}
+
+        # Process each layer independently
+        for layer_idx, (name, param) in enumerate(param_list):
+            log_memory(f"Layer {layer_idx+1}/{len(param_list)}: {name}")
+
+            # Compute magnitude importance for this layer
+            importance = param.data.abs().cpu()
+
+            # Find threshold for this layer using histogram-based approach
+            threshold = self._find_layer_threshold_histogram(
+                importance=importance,
+                sparsity=sparsity,
+                max_iterations=max_iterations,
+                tolerance=tolerance,
+                layer_name=name
+            )
+
+            # Create mask for this layer
+            all_masks[name] = importance < threshold
+
+            actual_sparsity = (all_masks[name].sum().item()) / all_masks[name].numel()
+            log_memory(f"  Layer {name}: threshold={threshold:.6f}, actual_sparsity={actual_sparsity:.6f}")
+
+        # Add non-prunable parameters
+        for name, param in model.named_parameters():
+            if name not in all_masks:
+                all_masks[name] = torch.zeros(param.shape, dtype=torch.bool, device='cpu')
+
+        log_memory(f"END: Layerwise magnitude pruning complete, {len(all_masks)} masks")
+        return all_masks
+
+    def _find_layer_threshold_histogram(
+        self,
+        importance: torch.Tensor,
+        sparsity: float,
+        max_iterations: int,
+        tolerance: float,
+        layer_name: str
+    ) -> float:
+        """
+        Find pruning threshold for a single layer using histogram-based approach
+        with smart edge expansion fallback.
+
+        Args:
+            importance: Importance scores for the layer [out_features, in_features]
+            sparsity: Target sparsity for this layer
+            max_iterations: Maximum binary search iterations
+            tolerance: Sparsity tolerance
+            layer_name: Name of the layer (for logging)
+
+        Returns:
+            Threshold value for pruning
+        """
+        total_count = importance.numel()
+        target_count = int(sparsity * total_count)
+
+        min_val = importance.min().item()
+        max_val = importance.max().item()
+
+        # Build coarse histogram
+        num_bins_coarse = 1000
+        num_bins_fine = 10000
+        eps = (max_val - min_val) * 1e-6 if max_val > min_val else 1e-6
+        hist_min = min_val - eps
+        hist_max = max_val + eps
+
+        importance_f32 = importance.float()
+        histogram = torch.histc(importance_f32, bins=num_bins_coarse, min=hist_min, max=hist_max)
+
+        # Find target bin
+        cumsum = histogram.cumsum(0)
+        coarse_bin_idx = (cumsum >= target_count).nonzero(as_tuple=True)[0]
+
+        if len(coarse_bin_idx) == 0:
+            # Target not reached - use max value
+            return max_val
+
+        coarse_bin_idx = coarse_bin_idx[0].item()
+        bin_width_coarse = (hist_max - hist_min) / num_bins_coarse
+        bin_count = histogram[coarse_bin_idx].item()
+        bin_density = bin_count / total_count
+
+        # Initial search bounds
+        search_min = min_val
+        search_max = max_val
+
+        if bin_density > 0.1:
+            # Dense bin - use fine histogram
+            fine_min = hist_min + coarse_bin_idx * bin_width_coarse
+            fine_max = hist_min + (coarse_bin_idx + 1) * bin_width_coarse
+            fine_eps = (fine_max - fine_min) * 1e-6
+            fine_min -= fine_eps
+            fine_max += fine_eps
+
+            # Compute local target
+            if coarse_bin_idx > 0:
+                values_below_target_bin = cumsum[coarse_bin_idx - 1].item()
+            else:
+                values_below_target_bin = 0
+            fine_target = target_count - values_below_target_bin
+
+            histogram_fine = torch.histc(importance_f32, bins=num_bins_fine, min=fine_min, max=fine_max)
+            cumsum_fine = histogram_fine.cumsum(0)
+            fine_bin_idx = (cumsum_fine >= fine_target).nonzero(as_tuple=True)[0]
+
+            if len(fine_bin_idx) == 0:
+                # Fallback to coarse estimate
+                initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
+                search_min = min_val
+                search_max = max_val
+            else:
+                fine_bin_idx = fine_bin_idx[0].item()
+                bin_width_fine = (fine_max - fine_min) / num_bins_fine
+                initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
+
+                # Set tight bounds based on element count (±1% slack)
+                slack_percent = 0.01
+                lower_target_fine = fine_target * (1 - slack_percent)
+                upper_target_fine = fine_target * (1 + slack_percent)
+
+                lower_bin_idx = (cumsum_fine >= lower_target_fine).nonzero(as_tuple=True)[0]
+                upper_bin_idx = (cumsum_fine >= upper_target_fine).nonzero(as_tuple=True)[0]
+
+                lower_bin = lower_bin_idx[0].item() if len(lower_bin_idx) > 0 else 0
+                upper_bin = upper_bin_idx[0].item() if len(upper_bin_idx) > 0 else num_bins_fine - 1
+
+                search_min = max(min_val, fine_min + lower_bin * bin_width_fine)
+                search_max = min(max_val, fine_min + (upper_bin + 1) * bin_width_fine)
+        else:
+            # Low density bin - use coarse estimate
+            initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
+
+        # Clamp initial threshold
+        initial_threshold = max(min_val, min(max_val, initial_threshold))
+
+        # Binary search with edge expansion fallback
+        low = search_min
+        high = search_max
+        threshold = initial_threshold
+
+        best_threshold = threshold
+        best_error = float('inf')
+
+        # Track if we hit edges in previous iteration
+        hit_lower_edge = False
+        hit_upper_edge = False
+
+        for iteration in range(max_iterations):
+            count_below = (importance < threshold).sum().item()
+            actual_sparsity = count_below / total_count
+            error = abs(actual_sparsity - sparsity)
+
+            if error < best_error:
+                best_error = error
+                best_threshold = threshold
+
+            if error < tolerance:
+                break
+
+            # Check if we're at bin edges and need to expand
+            at_lower_edge = abs(threshold - low) < 1e-9
+            at_upper_edge = abs(threshold - high) < 1e-9
+
+            if at_lower_edge and hit_lower_edge and actual_sparsity < sparsity:
+                # Hit lower edge twice in a row - expand search range downward
+                expansion = (high - low) * 0.1
+                low = max(min_val, low - expansion)
+
+            if at_upper_edge and hit_upper_edge and actual_sparsity > sparsity:
+                # Hit upper edge twice in a row - expand search range upward
+                expansion = (high - low) * 0.1
+                high = min(max_val, high + expansion)
+
+            hit_lower_edge = at_lower_edge
+            hit_upper_edge = at_upper_edge
+
+            # Binary search update
+            if actual_sparsity < sparsity:
+                low = threshold
+            else:
+                high = threshold
+
+            threshold = (low + high) / 2
+
+            if abs(high - low) < 1e-10:
+                break
+
+        return best_threshold
+
     def get_name(self) -> str:
         """Return the name of this pruning strategy."""
         return "magnitude_optimized"
