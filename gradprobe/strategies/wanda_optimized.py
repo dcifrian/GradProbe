@@ -59,7 +59,7 @@ class WANDAPruningOptimized(PruningStrategy):
         model: nn.Module,
         sparsity: float,
         max_iterations: int = 20,
-        tolerance: float = 0.0001
+        tolerance: float = 0.001
     ) -> Dict[str, torch.Tensor]:
         """
         Select weights to prune based on WANDA importance scores.
@@ -70,7 +70,7 @@ class WANDAPruningOptimized(PruningStrategy):
             model: The neural network model to analyze
             sparsity: Target sparsity level (fraction of weights to prune, 0-1)
             max_iterations: Maximum binary search iterations (default: 20)
-            tolerance: Target sparsity tolerance (default: 0.0001 = 0.01%)
+            tolerance: Target sparsity tolerance (default: 0.001 = 0.1%)
 
         Returns:
             Dictionary mapping parameter names to boolean masks where True indicates
