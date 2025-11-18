@@ -149,6 +149,10 @@ class MagnitudePruningOptimized(PruningStrategy):
 
         log_memory(f"Pass 1: Target in bin {coarse_bin_idx}/{num_bins_coarse}, bin density={bin_density*100:.1f}%")
 
+        # Track bounds for binary search
+        search_min = min_val
+        search_max = max_val
+
         if bin_density > 0.1:
             # Heavily populated bin - zoom in with fine histogram
             fine_min = hist_min + coarse_bin_idx * bin_width_coarse
@@ -175,6 +179,11 @@ class MagnitudePruningOptimized(PruningStrategy):
             fine_bin_idx = fine_bin_idx[0].item()
             bin_width_fine = (fine_max - fine_min) / num_bins_fine
             initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
+
+            # Use fine range for binary search bounds
+            search_min = max(min_val, fine_min)
+            search_max = min(max_val, fine_max)
+
             log_memory(f"Pass 2: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}")
         else:
             # Low density - coarse estimate is good enough
@@ -199,9 +208,9 @@ class MagnitudePruningOptimized(PruningStrategy):
         log_memory(f"Statistics: mean={mean:.6f}, std={std:.6f}, target_count={target_count}")
 
         # Binary search for optimal threshold
-        log_memory(f"Binary search: initial_threshold={initial_threshold:.6f}, bounds=[{min_val:.6f}, {max_val:.6f}]")
-        low = min_val
-        high = max_val
+        log_memory(f"Binary search: initial_threshold={initial_threshold:.6f}, bounds=[{search_min:.6f}, {search_max:.6f}]")
+        low = search_min
+        high = search_max
         threshold = initial_threshold  # Already clamped above
 
         best_threshold = threshold
