@@ -450,6 +450,7 @@ class WANDAPruningOptimized(PruningStrategy):
         best_threshold = threshold
         best_error = float('inf')
         prev_error = float('inf')
+        last_expansion_iteration = -10  # Track when we last expanded
 
         for iteration in range(max_iterations):
             # Count weights below threshold (streaming through layers)
@@ -499,39 +500,45 @@ class WANDAPruningOptimized(PruningStrategy):
                     expanded = False
                     if near_lower_side and actual_sparsity < sparsity:
                         # Need more pruning (higher threshold) but stuck near bottom - expand upward
-                        expansion = total_width * 0.1  # Expand by 10% of total width
+                        # Expand by 10x current range (not 10% of total!) to stay gradual
+                        expansion = max(range_width * 10.0, total_width * 0.01)
                         new_high = min(max_val, high + expansion)
                         if new_high > high:
                             high = new_high
                             expanded = True
+                            last_expansion_iteration = iteration
                             log_memory(f"Error stuck at {error:.6f}, both ends near lower side, expanding upward: [{low:.6f}, {high:.6f}]")
                     elif near_upper_side and actual_sparsity > sparsity:
                         # Need less pruning (lower threshold) but stuck near top - expand downward
-                        expansion = total_width * 0.1
+                        expansion = max(range_width * 10.0, total_width * 0.01)
                         new_low = max(min_val, low - expansion)
                         if new_low < low:
                             low = new_low
                             expanded = True
+                            last_expansion_iteration = iteration
                             log_memory(f"Error stuck at {error:.6f}, both ends near upper side, expanding downward: [{low:.6f}, {high:.6f}]")
                     elif actual_sparsity < sparsity:
                         # General case: need more pruning (higher threshold), expand upward
-                        expansion = max(range_width * 2.0, total_width * 0.05)
+                        expansion = max(range_width * 5.0, total_width * 0.01)
                         new_high = min(max_val, high + expansion)
                         if new_high > high:
                             high = new_high
                             expanded = True
+                            last_expansion_iteration = iteration
                             log_memory(f"Error stuck at {error:.6f}, expanding upward: [{low:.6f}, {high:.6f}]")
                     else:
                         # General case: need less pruning (lower threshold), expand downward
-                        expansion = max(range_width * 2.0, total_width * 0.05)
+                        expansion = max(range_width * 5.0, total_width * 0.01)
                         new_low = max(min_val, low - expansion)
                         if new_low < low:
                             low = new_low
                             expanded = True
+                            last_expansion_iteration = iteration
                             log_memory(f"Error stuck at {error:.6f}, expanding downward: [{low:.6f}, {high:.6f}]")
 
                     # If we couldn't expand (already at edge), give up to avoid infinite loop
-                    if not expanded:
+                    # But only if we haven't expanded recently (give it time to stabilize)
+                    if not expanded and (iteration - last_expansion_iteration) >= 5:
                         log_memory(f"Cannot expand further (at edge), accepting error={error:.6f}")
                         break
 
