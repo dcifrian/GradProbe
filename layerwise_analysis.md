@@ -1,91 +1,105 @@
-# Layerwise WANDA Pruning - Performance Analysis
+# Layerwise WANDA Timing Analysis - CORRECTED
 
-## Test Details
+## Test Configuration
 - Model: TinyStories-33M (68M parameters, 26 weight layers)
 - Strategy: WANDA with iterative pruning + layerwise=True
-- Configuration: 100 batches/layer, gradient_threshold=1.0
+- Batches: 100 per layer, gradient_threshold=1.0
+- Experimental: experimental_tune_both_steps=True
 
-## Performance Results
+## Timing Results (Wall-Clock Time)
 
 ### TEST 1: Magnitude (layerwise=False)
-- Completed in: ~3 minutes
+- Start: ~09:49
+- Sparsity levels: 10-50%
+- End: ~09:51 
+- **Total time: ~2 minutes**
 - Final sparsity: 47.16%
-- Final perplexity: 6.80 (from 3.89 baseline)
-- **Fast and efficient!**
+- Final perplexity: 6.80
 
 ### TEST 2: WANDA (layerwise=True)  
-- Runtime: **97+ minutes** (killed - still at 60% sparsity)
-- Expected: ~10 minutes
-- **Actual: 10x+ slower than expected!**
+- Start: 09:51
+- Breakdown by sparsity level:
+  - 10%: 09:51:12 → 09:51:41 = **29 seconds**
+  - 20%: 09:51:41 → 09:52:12 = **31 seconds**  
+  - 30%: 09:52:12 → 09:52:46 = **34 seconds**
+  - 40%: 09:52:46 → 09:53:19 = **33 seconds**
+  - 50%: 09:53:19 → 09:53:53 = **34 seconds**
+  - 60%: 09:53:53 → ~10:15 = **~21 minutes** (threshold tuning!)
+- End: ~10:15
+- **Total time: ~24 minutes**
+- Final sparsity: 57.72%
+- Final perplexity: 6.44
 
-## Root Cause Analysis
+## Time Breakdown Analysis
 
-The extreme slowness is due to layerwise processing in iterative pruning:
+### Per-Sparsity Level (10-50%)
+Average: ~32 seconds per level
 
-**Computation per iteration:**
-- With `layerwise=True`, each call to `iterative_prune()` at a given sparsity level:
-  1. Calls `prune_layerwise()` which processes **26 layers sequentially**
-  2. For each layer:
-     - Freezes all other layers  
-     - Calls `self.prune()` for that single layer
-     - `prune()` calls `strategy.select_weights_to_prune()`
-     - Computes gradients **twice** (original + modified) × 100 batches
-  3. Then evaluates perplexity
-  4. Compares with WANDA-only baseline (another call to select_weights_to_prune for all 26 params)
-
-**Total operations for 6 sparsity levels (10%-60%):**
-- Layerwise gradient computations: 6 levels × 26 layers × 2 passes × 100 batches = **31,200 forward/backward passes**
-- Plus baseline comparisons: 6 levels × 2 × 100 batches = **1,200 forward/backward passes**  
-- **Grand total: 32,400+ forward/backward passes**
-
-Compare to non-layerwise:
-- 6 levels × 2 passes × 100 batches = **1,200 forward/backward passes**
-- **27x fewer passes!**
-
-## Hotspot Identification
-
-### Primary Bottleneck
-The gradient computation in layerwise mode dominates runtime:
-- Each layer requires full model forward/backward passes
-- Even with activation caching in WANDA, gradients must be recomputed
-- 26 layers × multiple sparsity levels = massive overhead
-
-### Secondary Issues  
-1. **Per-layer strategy calls**: WANDA's `select_weights_to_prune()` is called 26 times per sparsity level
-   - Activation norms ARE cached (working correctly!)
-   - But importance computation and threshold calculation repeated 26 times
+**Components:**
+1. **WANDA calls**: 26 layers × <1 second = ~26 seconds
+   - Each call: "Using cached activation norms" → very fast
+   - Computes importance + threshold for 1 parameter
    
-2. **Baseline comparison overhead**: With `compare_baseline=True`, adds another full strategy call per iteration
+2. **Gradient computation**: ~5-10 seconds
+   - 26 layers processed sequentially
+   - Each layer unfreezes, computes gradients, refreezes
+   
+3. **Evaluation**: <1 second
 
-3. **Evaluation overhead**: Perplexity evaluation after each sparsity level
+### 60% Sparsity Level
+**21 minutes** due to experimental two-step threshold tuning:
+- Accuracy dropped 14.50% > 3.00% threshold
+- Triggered `experimental_tune_both_steps=True`
+- Re-prunes BOTH steps 50% and 60% multiple times
+- Searches for optimal threshold adjustment
+- Each iteration: 26 WANDA calls × 2 steps × multiple trials
 
-## Recommendations
+## Key Findings
 
-### Option 1: Batch Layer Processing
-Instead of 26 sequential `prune()` calls, compute gradients for multiple layers in parallel:
-- Group compatible layers (same dimensions)
-- Compute gradients for multiple layers in single pass
-- Could reduce passes from 26× to ~5-10×
+### 1. WANDA Calls Are FAST
+- Per-layer WANDA call: <1 second  
+- 26 calls per sparsity level = ~26 seconds total
+- Activations correctly cached across all calls
+- **BUT**: Importance computation + threshold repeated 26 times
 
-### Option 2: Gradient Caching (if memory allows)
-- Cache gradient computations across layers within same sparsity level
-- Trade memory for speed
-- Would reduce redundant gradient calculations
+### 2. Gradient Computation Is MODERATE
+- ~5-10 seconds per sparsity level for all 26 layers
+- NOT the primary bottleneck (contrary to initial analysis)
 
-### Option 3: Skip Baseline Comparisons in Layerwise
-- `compare_baseline=True` doubles the strategy calls
-- Could make it optional for layerwise mode
+### 3. Threshold Tuning Is EXPENSIVE
+- When enabled and triggered, dominates runtime
+- Two-step tuning: 21 minutes for single sparsity level
+- Regular tuning would be much faster (only tunes current step)
 
-### Option 4: Optimize Threshold Computation  
-- WANDA computes global threshold by sampling all parameters
-- In layerwise mode, could compute per-layer threshold more efficiently
-- Avoid collecting importance for all 26 params when pruning just 1
+## Optimization Opportunity
 
-## Conclusion
+**Cache WANDA Results Across Layers:**
 
-Layerwise pruning with iterative WANDA is **extremely slow** due to:
-1. 26 sequential layer processings per sparsity level
-2. Each requiring full gradient computations (2 × 100 batches)
-3. Multiplied across 6+ sparsity levels = 31,200+ passes
+Currently in `prune_layerwise()`:
+```
+For each of 26 layers:
+    Call strategy.select_weights_to_prune(model, sparsity)
+        → Computes importance for ALL 26 parameters
+        → Computes global threshold
+        → Returns masks for all parameters (but only uses 1)
+```
 
-**Immediate fix needed**: Optimize layerwise gradient computation to avoid redundant forward/backward passes.
+The weights haven't changed between layers! We could:
+```
+At start of prune_layerwise():
+    Call strategy.select_weights_to_prune(model, sparsity) ONCE
+    Cache all 26 masks
+
+For each of 26 layers:
+    Extract cached mask for this layer
+    Skip strategy call entirely
+```
+
+**Expected speedup:**
+- Current: 26 WANDA calls × 1 sec = 26 seconds
+- Optimized: 1 WANDA call × 1 sec = 1 second  
+- **Savings: 25 seconds per sparsity level**
+
+For 6 sparsity levels: **2.5 minutes saved**
+
+This preserves the core insight (gradient recomputation per layer) while eliminating redundant WANDA computations.
