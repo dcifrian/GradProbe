@@ -279,3 +279,15 @@ with torch.no_grad():
 generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
 print(generated_text)
 print("="*70)
+
+# Save the pruned model
+print("\n" + "="*70)
+print("SAVING PRUNED MODEL")
+print("="*70)
+output_dir = "pruned_models/tinystories_wanda_pruned"
+os.makedirs(output_dir, exist_ok=True)
+model.save_pretrained(output_dir)
+tokenizer.save_pretrained(output_dir)
+print(f"Pruned model saved to: {output_dir}")
+print(f"Sparsity: {results_wanda['final_sparsity']:.1%}")
+print("="*70)

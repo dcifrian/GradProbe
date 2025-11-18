@@ -92,12 +92,8 @@ class MagnitudePruningOptimized(PruningStrategy):
                     masks[name] = torch.zeros(param.shape, dtype=torch.bool, device='cpu')
             return masks
 
-        # Pass 1: Compute global statistics (streaming, no concatenation!)
-        # Use float64 for numerical stability with large models
-        log_memory("Computing global statistics (streaming)")
-        total_count = 0
-        total_sum = 0.0
-        total_sum_sq = 0.0
+        # Pass 1: Compute global statistics (using torch operations on cached tensors)
+        log_memory("Computing global statistics")
         importance_cache = []
 
         for name, param in param_list:
@@ -105,57 +101,41 @@ class MagnitudePruningOptimized(PruningStrategy):
             importance = param.data.abs().cpu()
             importance_cache.append((name, importance))
 
-            # Update running statistics using float32 for stability
-            # Convert to float32 to avoid overflow on large models (if using fp16)
-            importance_f32 = importance.float()
-            total_count += importance_f32.numel()
-            total_sum += importance_f32.sum().item()
-            total_sum_sq += (importance_f32 ** 2).sum().item()
+        # Concatenate all importance tensors and compute statistics using torch
+        # This is numerically stable and uses fp32 GPU operations
+        all_importance = torch.cat([imp.flatten() for _, imp in importance_cache])
 
-        # Compute global mean and std
-        if total_count > 0:
-            mean = total_sum / total_count
-            variance = (total_sum_sq / total_count) - (mean ** 2)
-            # Clamp variance to avoid numerical issues
-            variance = max(0.0, variance)
-            std = (variance ** 0.5)
-        else:
-            mean = 0.0
-            std = 0.0
-
+        mean = all_importance.mean().item()
+        std = all_importance.std().item()
+        total_count = all_importance.numel()
         target_count = int(sparsity * total_count)
 
         log_memory(f"Statistics: mean={mean:.6f}, std={std:.6f}, target_count={target_count}")
 
         # Find min/max across all layers for bounds
-        min_val = min(importance.min().item() for _, importance in importance_cache)
-        max_val = max(importance.max().item() for _, importance in importance_cache)
+        min_val = all_importance.min().item()
+        max_val = all_importance.max().item()
 
         # Initial threshold estimate using normal approximation
-        # Check for numerical issues
-        if torch.isnan(torch.tensor(mean)) or torch.isinf(torch.tensor(mean)) or std == 0.0:
-            log_memory("WARNING: Statistics failed, using midpoint as initial guess")
-            initial_threshold = (min_val + max_val) / 2
+        if sparsity < 0.5:
+            p = sparsity
+            sign = -1
         else:
-            if sparsity < 0.5:
-                p = sparsity
-                sign = -1
-            else:
-                p = 1 - sparsity
-                sign = 1
+            p = 1 - sparsity
+            sign = 1
 
-            if p > 0.0 and p < 1.0:
-                t = (-2 * torch.log(torch.tensor(p))) ** 0.5
-                c0, c1, c2 = 2.515517, 0.802853, 0.010328
-                d1, d2, d3 = 1.432788, 0.189269, 0.001308
-                z_approx = sign * (t - (c0 + c1*t + c2*t*t) / (1 + d1*t + d2*t*t + d3*t*t*t))
-            else:
-                z_approx = 0.0
+        if p > 0.0 and p < 1.0:
+            t = (-2 * torch.log(torch.tensor(p))) ** 0.5
+            c0, c1, c2 = 2.515517, 0.802853, 0.010328
+            d1, d2, d3 = 1.432788, 0.189269, 0.001308
+            z_approx = sign * (t - (c0 + c1*t + c2*t*t) / (1 + d1*t + d2*t*t + d3*t*t*t))
+        else:
+            z_approx = 0.0
 
-            initial_threshold = mean + z_approx * std
+        initial_threshold = mean + z_approx * std
 
-            # Clamp to valid range
-            initial_threshold = max(min_val, min(max_val, initial_threshold))
+        # Clamp to valid range
+        initial_threshold = max(min_val, min(max_val, initial_threshold))
 
         # Binary search for optimal threshold
         log_memory(f"Binary search: initial_threshold={initial_threshold:.6f}, bounds=[{min_val:.6f}, {max_val:.6f}]")

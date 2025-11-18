@@ -257,6 +257,18 @@ if 'sparsity_history' in results:
         # acc is negative perplexity, so negate it back for display
         print(f"  Step {i+1}: {sparsity:.1%} sparsity -> perplexity {-acc:.2f}")
 
+# Save the pruned model
+print("\n" + "="*70)
+print("SAVING PRUNED MODEL")
+print("="*70)
+output_dir = "pruned_models/mistral_magnitude_pruned"
+os.makedirs(output_dir, exist_ok=True)
+model.save_pretrained(output_dir)
+tokenizer.save_pretrained(output_dir)
+print(f"Pruned model saved to: {output_dir}")
+print(f"Sparsity: {final_sparsity:.1%}")
+print("="*70)
+
 print("\n" + "="*70)
 print("TEST COMPLETE")
 print("="*70)
