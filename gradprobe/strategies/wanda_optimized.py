@@ -489,58 +489,74 @@ class WANDAPruningOptimized(PruningStrategy):
 
                 if error_not_improving:
                     range_width = high - low
-                    total_width = max_val - min_val
+                    initial_range_width = search_max - search_min
 
-                    # Check if both ends of search range are clustered near one side
-                    # Are we stuck near the lower side of valid range?
-                    near_lower_side = (high - min_val) < (total_width * 0.1)
-                    # Are we stuck near the upper side of valid range?
-                    near_upper_side = (max_val - low) < (total_width * 0.1)
+                    # Check if range has collapsed significantly
+                    range_collapsed = range_width < initial_range_width * 0.1
 
-                    expanded = False
-                    if near_lower_side and actual_sparsity < sparsity:
-                        # Need more pruning (higher threshold) but stuck near bottom - expand upward
-                        # Expand by 10x current range (not 10% of total!) to stay gradual
-                        expansion = max(range_width * 10.0, total_width * 0.01)
-                        new_high = min(max_val, high + expansion)
-                        if new_high > high:
-                            high = new_high
-                            expanded = True
-                            last_expansion_iteration = iteration
-                            log_memory(f"Error stuck at {error:.6f}, both ends near lower side, expanding upward: [{low:.6f}, {high:.6f}]")
-                    elif near_upper_side and actual_sparsity > sparsity:
-                        # Need less pruning (lower threshold) but stuck near top - expand downward
-                        expansion = max(range_width * 10.0, total_width * 0.01)
-                        new_low = max(min_val, low - expansion)
-                        if new_low < low:
-                            low = new_low
-                            expanded = True
-                            last_expansion_iteration = iteration
-                            log_memory(f"Error stuck at {error:.6f}, both ends near upper side, expanding downward: [{low:.6f}, {high:.6f}]")
-                    elif actual_sparsity < sparsity:
-                        # General case: need more pruning (higher threshold), expand upward
-                        expansion = max(range_width * 5.0, total_width * 0.01)
-                        new_high = min(max_val, high + expansion)
-                        if new_high > high:
-                            high = new_high
-                            expanded = True
-                            last_expansion_iteration = iteration
-                            log_memory(f"Error stuck at {error:.6f}, expanding upward: [{low:.6f}, {high:.6f}]")
-                    else:
-                        # General case: need less pruning (lower threshold), expand downward
-                        expansion = max(range_width * 5.0, total_width * 0.01)
-                        new_low = max(min_val, low - expansion)
-                        if new_low < low:
-                            low = new_low
-                            expanded = True
-                            last_expansion_iteration = iteration
-                            log_memory(f"Error stuck at {error:.6f}, expanding downward: [{low:.6f}, {high:.6f}]")
+                    if range_collapsed:
+                        # Check if both ends are clustered near one edge of INITIAL search range
+                        # (not the absolute min/max, but the histogram-based search range)
+                        near_lower_edge = (high - search_min) < initial_range_width * 0.1
+                        near_upper_edge = (search_max - low) < initial_range_width * 0.1
 
-                    # If we couldn't expand (already at edge), give up to avoid infinite loop
-                    # But only if we haven't expanded recently (give it time to stabilize)
-                    if not expanded and (iteration - last_expansion_iteration) >= 5:
-                        log_memory(f"Cannot expand further (at edge), accepting error={error:.6f}")
-                        break
+                        expanded = False
+
+                        # Use histogram bins for expansion (not percentage-based!)
+                        if self._cached_histogram_info is not None:
+                            cached = self._cached_histogram_info
+                            histogram = cached['histogram']
+                            cumsum = cached['cumsum']
+                            hist_min = cached['hist_min']
+                            hist_max = cached['hist_max']
+                            bin_width_coarse = cached['bin_width_coarse']
+                            num_bins_coarse = len(histogram)
+
+                            if near_upper_edge and actual_sparsity < sparsity:
+                                # Stuck near top, need HIGHER threshold (more sparsity) - expand UPWARD
+                                # Binary search has been pushing low=threshold, converging near upper edge
+                                # Jump to next histogram bin above current high bound
+                                if high >= hist_min and high < hist_max:
+                                    current_bin = int((high - hist_min) / bin_width_coarse)
+                                    # Jump to next coarse bin boundary
+                                    new_high = min(max_val, hist_min + (current_bin + 1) * bin_width_coarse)
+                                else:
+                                    # Outside histogram range - expand to max_val
+                                    new_high = max_val
+
+                                if new_high > high:
+                                    high = new_high
+                                    expanded = True
+                                    last_expansion_iteration = iteration
+                                    log_memory(f"Error stuck at {error:.6f}, range collapsed near upper edge (sparsity too low), expanding upward to next histogram bin: [{low:.6f}, {high:.6f}]")
+
+                            elif near_lower_edge and actual_sparsity > sparsity:
+                                # Stuck near bottom, need LOWER threshold (less sparsity) - expand DOWNWARD
+                                # Binary search has been pushing high=threshold, converging near lower edge
+                                # Jump to previous histogram bin below current low bound
+                                if low > hist_min and low <= hist_max:
+                                    current_bin = int((low - hist_min) / bin_width_coarse)
+                                    # Jump to previous coarse bin boundary
+                                    new_low = max(min_val, hist_min + (current_bin - 1) * bin_width_coarse)
+                                else:
+                                    # Outside histogram range - expand to min_val
+                                    new_low = min_val
+
+                                if new_low < low:
+                                    low = new_low
+                                    expanded = True
+                                    last_expansion_iteration = iteration
+                                    log_memory(f"Error stuck at {error:.6f}, range collapsed near lower edge (sparsity too high), expanding downward to next histogram bin: [{low:.6f}, {high:.6f}]")
+
+                            # If we couldn't expand, give up to avoid infinite loop
+                            # But only if we haven't expanded recently (give it time to stabilize)
+                            if not expanded and (iteration - last_expansion_iteration) >= 5:
+                                log_memory(f"Cannot expand further (at data edge), accepting error={error:.6f}")
+                                break
+                        else:
+                            # No cached histogram - can't do bin-based expansion
+                            log_memory(f"No cached histogram for bin-based expansion, accepting error={error:.6f}")
+                            break
 
             threshold = (low + high) / 2
 
