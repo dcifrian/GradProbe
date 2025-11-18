@@ -117,49 +117,72 @@ class MagnitudePruningOptimized(PruningStrategy):
         log_memory(f"Importance dtype: {first_dtype}, zeros: {zero_count}/{total_count} ({zero_count/total_count*100:.1f}%)")
 
         # Build histogram to estimate initial threshold
-        # Use 10000 bins for good resolution
-        # Expand range slightly to avoid boundary issues with torch.histc
-        num_bins = 10000
-        histogram = torch.zeros(num_bins)
+        # Use two-pass approach for bimodal distributions:
+        # Pass 1: Coarse histogram to find which region target is in
+        # Pass 2: If bin is heavily populated, zoom in with fine histogram
+        num_bins_coarse = 1000
+        num_bins_fine = 10000
+        histogram = torch.zeros(num_bins_coarse)
         eps = (max_val - min_val) * 1e-6 if max_val > min_val else 1e-6
         hist_min = min_val - eps
         hist_max = max_val + eps
 
-        log_memory(f"Building histogram with {num_bins} bins, range=[{hist_min:.6f}, {hist_max:.6f}]")
+        log_memory(f"Pass 1: Coarse histogram with {num_bins_coarse} bins, range=[{hist_min:.6f}, {hist_max:.6f}]")
         for idx, (name, importance) in enumerate(importance_cache):
-            # torch.histc requires float32 and doesn't work well with fp16
             importance_f32 = importance.float()
-            hist = torch.histc(importance_f32, bins=num_bins, min=hist_min, max=hist_max)
+            hist = torch.histc(importance_f32, bins=num_bins_coarse, min=hist_min, max=hist_max)
             histogram += hist
 
-            # Debug first few
-            if idx < 3:
-                log_memory(f"  Layer {idx} ({name}): {importance.numel()} values, hist.sum()={hist.sum().item():.0f}, dtype={importance.dtype}")
-
-        # Debug: check histogram
-        hist_total = histogram.sum().item()
-        log_memory(f"Histogram total count: {hist_total:.0f} vs expected: {total_count} (diff: {hist_total - total_count:.0f})")
-
-        # Find threshold from histogram
+        # Find which bin contains the target percentile
         cumsum = histogram.cumsum(0)
-        log_memory(f"Cumsum range: [{cumsum[0].item():.0f}, {cumsum[-1].item():.0f}], target: {target_count}")
+        coarse_bin_idx = (cumsum >= target_count).nonzero(as_tuple=True)[0]
 
-        # Find first bin where cumsum >= target_count
-        threshold_bin = (cumsum >= target_count).nonzero(as_tuple=True)[0]
+        if len(coarse_bin_idx) == 0:
+            raise RuntimeError(f"Coarse histogram failed: cumsum never reached target_count")
 
-        if len(threshold_bin) == 0:
-            # No fallback - error with debug info
-            raise RuntimeError(f"Histogram failed: cumsum never reached target_count. "
-                             f"histogram.sum()={hist_total}, total_count={total_count}, "
-                             f"cumsum[-1]={cumsum[-1].item()}, target_count={target_count}")
+        coarse_bin_idx = coarse_bin_idx[0].item()
+        bin_width_coarse = (hist_max - hist_min) / num_bins_coarse
 
-        bin_idx = threshold_bin[0].item()
-        # Convert bin index to actual value
-        bin_width = (hist_max - hist_min) / num_bins
-        initial_threshold = hist_min + (bin_idx + 0.5) * bin_width
-        # Clamp to actual data range (not expanded range)
+        # Check if this bin is heavily populated (>10% of total values)
+        bin_count = histogram[coarse_bin_idx].item()
+        bin_density = bin_count / total_count
+
+        log_memory(f"Pass 1: Target in bin {coarse_bin_idx}/{num_bins_coarse}, bin density={bin_density*100:.1f}%")
+
+        if bin_density > 0.1:
+            # Heavily populated bin - zoom in with fine histogram
+            fine_min = hist_min + coarse_bin_idx * bin_width_coarse
+            fine_max = hist_min + (coarse_bin_idx + 1) * bin_width_coarse
+            fine_eps = (fine_max - fine_min) * 1e-6
+            fine_min -= fine_eps
+            fine_max += fine_eps
+
+            log_memory(f"Pass 2: Zooming into [{fine_min:.6f}, {fine_max:.6f}] with {num_bins_fine} bins")
+
+            histogram_fine = torch.zeros(num_bins_fine)
+            for idx, (name, importance) in enumerate(importance_cache):
+                importance_f32 = importance.float()
+                hist = torch.histc(importance_f32, bins=num_bins_fine, min=fine_min, max=fine_max)
+                histogram_fine += hist
+
+            # Find threshold in fine histogram
+            cumsum_fine = histogram_fine.cumsum(0)
+            fine_bin_idx = (cumsum_fine >= target_count).nonzero(as_tuple=True)[0]
+
+            if len(fine_bin_idx) == 0:
+                raise RuntimeError(f"Fine histogram failed: cumsum never reached target_count")
+
+            fine_bin_idx = fine_bin_idx[0].item()
+            bin_width_fine = (fine_max - fine_min) / num_bins_fine
+            initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
+            log_memory(f"Pass 2: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}")
+        else:
+            # Low density - coarse estimate is good enough
+            initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
+            log_memory(f"Using coarse estimate: threshold={initial_threshold:.6f}")
+
+        # Clamp to actual data range
         initial_threshold = max(min_val, min(max_val, initial_threshold))
-        log_memory(f"Histogram-based threshold: bin {bin_idx}/{num_bins}, threshold={initial_threshold:.6f}")
 
         # Compute mean/std for diagnostics using torch operations (avoid overflow)
         # Accumulate as double precision scalars
