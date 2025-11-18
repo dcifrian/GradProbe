@@ -41,10 +41,10 @@ print("="*70)
 print("WANDA STRATEGY DIRECT TEST ON MISTRAL-7B")
 print("="*70)
 
-print("\nLoading Mistral-7B-Instruct-v0.2...")
+print("\nLoading Mistral-7B...")
 print_memory("Before loading")
 
-model_name = "mistralai/Mistral-7B-Instruct-v0.2"
+model_name = "mistralai/Mistral-7B-v0.3"
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
     torch_dtype=torch.float16,
@@ -99,13 +99,13 @@ for sparsity in test_sparsities:
     # Create WANDA strategy
     wanda = WANDAPruning(dataloader=dataloader, num_batches=3)
 
-    print(f"\nCalling compute_mask with sparsity={sparsity}...")
-    print_memory("Before compute_mask")
+    print(f"\nCalling select_weights_to_prune with sparsity={sparsity}...")
+    print_memory("Before select_weights_to_prune")
 
-    # Call compute_mask and capture what happens
-    masks = wanda.compute_mask(model, sparsity=sparsity)
+    # Call select_weights_to_prune and capture what happens
+    masks = wanda.select_weights_to_prune(model, sparsity=sparsity)
 
-    print_memory("After compute_mask")
+    print_memory("After select_weights_to_prune")
 
     # Analyze results
     print(f"\nResults for sparsity={sparsity:.1%}:")
