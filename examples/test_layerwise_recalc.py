@@ -3,6 +3,10 @@ Test the restored layerwise approach that recalculates WANDA after each layer.
 
 This should replicate the old successful approach (f320eb98) but with fast histogram-based WANDA.
 """
+import sys
+import os
+sys.path.insert(0, os.path.abspath('.'))
+
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.utils.data import DataLoader
@@ -20,13 +24,14 @@ tokenizer = AutoTokenizer.from_pretrained('roneneldan/TinyStories-33M')
 # Simple calibration data
 text = 'Once upon a time, there was a little girl named Lily.'
 tokens = tokenizer(text, return_tensors='pt')
-dataset = [(tokens['input_ids'],)]
+input_ids = tokens['input_ids']
+dataset = [(input_ids, input_ids)]  # (input, target) tuples
 dataloader = DataLoader(dataset, batch_size=1)
 
 # Loss function
 def loss_fn(model, batch):
-    input_ids = batch[0]
-    outputs = model(input_ids, labels=input_ids)
+    inputs, targets = batch
+    outputs = model(inputs, labels=targets)
     return outputs.loss
 
 # Create pruner with WANDA strategy
