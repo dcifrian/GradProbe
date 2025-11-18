@@ -30,6 +30,7 @@ DEVICE = "auto"  # Will auto-detect CUDA
 SEQ_LENGTH = 128  # Reduced from 512 to save memory
 NUM_BATCHES_GRADIENT = 10  # Reduced from 50 to save memory and time
 NUM_BATCHES_WANDA = 5  # Reduced from 20 to save memory
+NUM_SEQUENCES = 3  # Limit number of sequences to save memory (like profiler)
 LOW_MEMORY_MODE = True  # CRITICAL for large models - disables gradient caching
 
 # Calibration text - using more diverse content for larger model
@@ -103,7 +104,7 @@ tokens = tokenizer.encode(CALIBRATION_TEXT, return_tensors='pt')
 print(f"Total tokens: {tokens.shape[1]}")
 print_gpu_memory("After tokenization")
 
-# Create dataset with sliding windows
+# Create dataset with sliding windows (limit to NUM_SEQUENCES to save memory)
 stride = SEQ_LENGTH // 2  # 50% overlap
 input_sequences = []
 target_sequences = []
@@ -114,6 +115,8 @@ for i in range(0, tokens.shape[1] - SEQ_LENGTH - 1, stride):
     if input_seq.shape[1] == SEQ_LENGTH and target_seq.shape[1] == SEQ_LENGTH:
         input_sequences.append(input_seq)
         target_sequences.append(target_seq)
+        if len(input_sequences) >= NUM_SEQUENCES:
+            break
 
 print(f"Created {len(input_sequences)} sequences of length {SEQ_LENGTH}")
 
@@ -123,8 +126,10 @@ all_targets = torch.cat(target_sequences, dim=0)
 dataset = TensorDataset(all_inputs, all_targets)
 dataloader_pruning = DataLoader(dataset, batch_size=1, shuffle=False)
 
-# Store for evaluation
-eval_data = list(zip(input_sequences, target_sequences))
+# Store for evaluation (use first few from dataset to avoid duplicate memory)
+# We can recreate from dataset later: eval_data = [(all_inputs[i:i+1], all_targets[i:i+1]) for i in range(min(5, len(all_inputs)))]
+eval_inputs = all_inputs[:min(5, len(all_inputs))]
+eval_targets = all_targets[:min(5, len(all_inputs))]
 
 
 # Evaluation function - compute perplexity
@@ -135,22 +140,21 @@ def eval_perplexity(m):
     device = next(m.parameters()).device
 
     with torch.no_grad():
-        # Use first few sequences for eval
-        for input_seq, target_seq in eval_data[:min(5, len(eval_data))]:
-            input_seq = input_seq.to(device)
-            target_seq = target_seq.to(device)
+        # Use eval sequences
+        input_batch = eval_inputs.to(device)
+        target_batch = eval_targets.to(device)
 
-            outputs = m(input_seq)
-            logits = outputs.logits
+        outputs = m(input_batch)
+        logits = outputs.logits
 
-            loss = nn.functional.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
-                target_seq.reshape(-1),
-                reduction='sum'
-            )
+        loss = nn.functional.cross_entropy(
+            logits.reshape(-1, logits.size(-1)),
+            target_batch.reshape(-1),
+            reduction='sum'
+        )
 
-            total_loss += loss.item()
-            total_tokens += target_seq.numel()
+        total_loss += loss.item()
+        total_tokens += target_batch.numel()
 
     perplexity = math.exp(total_loss / total_tokens)
     return perplexity
