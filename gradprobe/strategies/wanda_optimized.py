@@ -158,28 +158,40 @@ class WANDAPruningOptimized(PruningStrategy):
             hist = torch.histc(importance, bins=num_bins, min=min_val, max=max_val)
             histogram += hist
 
+        # Debug: check histogram
+        hist_total = histogram.sum().item()
+        log_memory(f"Histogram total count: {hist_total:.0f} vs expected: {total_count} (diff: {hist_total - total_count:.0f})")
+
         # Find threshold from histogram
         cumsum = histogram.cumsum(0)
+        log_memory(f"Cumsum range: [{cumsum[0].item():.0f}, {cumsum[-1].item():.0f}], target: {target_count}")
+
         # Find first bin where cumsum >= target_count
         threshold_bin = (cumsum >= target_count).nonzero(as_tuple=True)[0]
 
-        if len(threshold_bin) > 0:
-            bin_idx = threshold_bin[0].item()
-            # Convert bin index to actual value
-            bin_width = (max_val - min_val) / num_bins
-            initial_threshold = min_val + (bin_idx + 0.5) * bin_width
-            log_memory(f"Histogram-based threshold: bin {bin_idx}/{num_bins}, threshold={initial_threshold:.6f}")
-        else:
-            # Fallback: use midpoint
-            initial_threshold = (min_val + max_val) / 2
-            log_memory(f"WARNING: Could not find threshold from histogram, using midpoint={initial_threshold:.6f}")
+        if len(threshold_bin) == 0:
+            # No fallback - error with debug info
+            raise RuntimeError(f"Histogram failed: cumsum never reached target_count. "
+                             f"histogram.sum()={hist_total}, total_count={total_count}, "
+                             f"cumsum[-1]={cumsum[-1].item()}, target_count={target_count}")
 
-        # Also compute mean/std for diagnostics
-        mean = sum(imp.sum().item() for _, imp in importance_cache) / total_count
-        # For std, use the simple formula (not perfectly accurate but good enough for logging)
-        sum_sq = sum((imp ** 2).sum().item() for _, imp in importance_cache)
-        variance = (sum_sq / total_count) - (mean ** 2)
-        std = variance ** 0.5 if variance > 0 else 0.0
+        bin_idx = threshold_bin[0].item()
+        # Convert bin index to actual value
+        bin_width = (max_val - min_val) / num_bins
+        initial_threshold = min_val + (bin_idx + 0.5) * bin_width
+        log_memory(f"Histogram-based threshold: bin {bin_idx}/{num_bins}, threshold={initial_threshold:.6f}")
+
+        # Compute mean/std for diagnostics using torch operations (avoid overflow)
+        # Accumulate as double precision scalars
+        mean_accum = 0.0
+        for _, imp in importance_cache:
+            mean_accum += imp.double().sum().item()
+        mean = mean_accum / total_count
+
+        variance_accum = 0.0
+        for _, imp in importance_cache:
+            variance_accum += ((imp.double() - mean) ** 2).sum().item()
+        std = (variance_accum / total_count) ** 0.5
 
         log_memory(f"Statistics: mean={mean:.6f}, std={std:.6f}, target_count={target_count}")
 
