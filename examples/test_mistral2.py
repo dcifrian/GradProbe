@@ -175,6 +175,12 @@ def eval_perplexity(m):
     perplexity = math.exp(total_loss / total_tokens)
     return perplexity
 
+# Wrapper for iterative_prune - return negative perplexity
+# This makes the stopping logic work: increases in perplexity = decreases in score
+def eval_fn_adjusted(m):
+    perplexity = eval_perplexity(m)
+    return -perplexity
+
 # Initialize pruner with all optimizations (same as profiler)
 print(f"\nInitializing GradProbe with WANDA strategy...")
 print_memory("Before pruner init")
@@ -211,13 +217,13 @@ print_memory("Before pruning")
 results = pruner.iterative_prune(
     dataloader=dataloader,
     loss_fn=loss_fn,
-    eval_fn=eval_perplexity,
+    eval_fn=eval_fn_adjusted,  # Use adjusted function that returns -perplexity
     initial_sparsity=INITIAL_SPARSITY,
     sparsity_step=SPARSITY_STEP,
     max_accuracy_drop=MAX_ACCURACY_DROP,
     num_batches=NUM_BATCHES_GRADIENT,
     reduction_factor=0.1,
-    gradient_threshold=0.0,
+    gradient_threshold=0.5,  # Changed from 0.0 (too restrictive)
     layerwise=False,  # Explicitly set to False like profiler
     verbose=True,
     compare_baseline=True
@@ -233,9 +239,10 @@ print("\n" + "="*70)
 print("PRUNING RESULTS")
 print("="*70)
 
-print(f"\nBaseline perplexity: {results['baseline_accuracy']:.2f}")
-print(f"Final perplexity: {results['final_accuracy']:.2f}")
-print(f"Perplexity change: {results['final_accuracy'] - results['baseline_accuracy']:.2f}")
+# Note: results contain negative perplexity, so negate back for display
+print(f"\nBaseline perplexity: {-results['initial_accuracy']:.2f}")
+print(f"Final perplexity: {-results['final_accuracy']:.2f}")
+print(f"Perplexity change: {-results['final_accuracy'] - (-results['initial_accuracy']):.2f}")
 
 total_params = sum(p.numel() for p in model.parameters())
 zero_params = sum((p.data == 0).sum().item() for p in model.parameters())
@@ -247,7 +254,8 @@ print(f"Pruned {zero_params:,} out of {total_params:,} parameters")
 if 'sparsity_history' in results:
     print("\nSparsity progression:")
     for i, (sparsity, acc) in enumerate(zip(results['sparsity_history'], results['accuracy_history'])):
-        print(f"  Step {i+1}: {sparsity:.1%} sparsity -> perplexity {acc:.2f}")
+        # acc is negative perplexity, so negate it back for display
+        print(f"  Step {i+1}: {sparsity:.1%} sparsity -> perplexity {-acc:.2f}")
 
 print("\n" + "="*70)
 print("TEST COMPLETE")
