@@ -47,7 +47,7 @@ print_memory("Before loading")
 model_name = "mistralai/Mistral-7B-v0.3"
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
-    torch_dtype=torch.float16,
+    dtype=torch.float16,
     device_map="auto",
     low_cpu_mem_usage=True
 )
