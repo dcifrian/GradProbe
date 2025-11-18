@@ -140,12 +140,12 @@ class WANDAPruningOptimized(PruningStrategy):
 
             importance_cache.append((name, importance))
 
-            # Update running statistics using float32 for stability
-            # Convert to float32 to avoid overflow on large models (if using fp16)
-            importance_f32 = importance.float()
-            total_count += importance_f32.numel()
-            total_sum += importance_f32.sum().item()
-            total_sum_sq += (importance_f32 ** 2).sum().item()
+            # Update running statistics using float64 for stability
+            # Convert to float64 to avoid overflow on large models (7B+ parameters)
+            importance_f64 = importance.double()
+            total_count += importance_f64.numel()
+            total_sum += importance_f64.sum().item()
+            total_sum_sq += (importance_f64 ** 2).sum().item()
 
         # Compute global mean and std
         if total_count > 0:
@@ -370,11 +370,11 @@ class WANDAPruningOptimized(PruningStrategy):
             importance = param.data.abs().cpu()
             importance_cache.append((name, importance))
 
-            # Use float32 for numerical stability
-            importance_f32 = importance.float()
-            total_count += importance_f32.numel()
-            total_sum += importance_f32.sum().item()
-            total_sum_sq += (importance_f32 ** 2).sum().item()
+            # Use float64 for numerical stability
+            importance_f64 = importance.double()
+            total_count += importance_f64.numel()
+            total_sum += importance_f64.sum().item()
+            total_sum_sq += (importance_f64 ** 2).sum().item()
 
         if total_count > 0:
             mean = total_sum / total_count
