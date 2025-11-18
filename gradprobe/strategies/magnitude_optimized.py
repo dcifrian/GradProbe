@@ -180,11 +180,16 @@ class MagnitudePruningOptimized(PruningStrategy):
             bin_width_fine = (fine_max - fine_min) / num_bins_fine
             initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
 
-            # Use fine range for binary search bounds
-            search_min = max(min_val, fine_min)
-            search_max = min(max_val, fine_max)
+            # Set tight binary search bounds around the target bin
+            # Use ±10 bins around target for refinement room
+            bin_margin = 10
+            lower_bin = max(0, fine_bin_idx - bin_margin)
+            upper_bin = min(num_bins_fine - 1, fine_bin_idx + bin_margin)
 
-            log_memory(f"Pass 2: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}")
+            search_min = max(min_val, fine_min + lower_bin * bin_width_fine)
+            search_max = min(max_val, fine_min + (upper_bin + 1) * bin_width_fine)
+
+            log_memory(f"Pass 2: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}, search range: bins [{lower_bin}, {upper_bin}]")
         else:
             # Low density - coarse estimate is good enough
             initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
