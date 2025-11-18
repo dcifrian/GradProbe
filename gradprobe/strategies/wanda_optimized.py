@@ -118,7 +118,7 @@ class WANDAPruningOptimized(PruningStrategy):
                     masks[name] = torch.zeros(param.shape, dtype=torch.bool, device='cpu')
             return masks
 
-        # Pass 1: Compute global statistics (using torch operations on cached tensors)
+        # Pass 1: Compute global statistics and build histogram for initial threshold
         log_memory("Computing global statistics")
         importance_cache = []
 
@@ -137,49 +137,51 @@ class WANDAPruningOptimized(PruningStrategy):
 
             importance_cache.append((name, importance))
 
-        # Concatenate all importance tensors and compute statistics using torch
-        # This is numerically stable and uses fp32 GPU operations
-        all_importance = torch.cat([imp.flatten() for _, imp in importance_cache])
+        # Find global min/max first
+        min_val = min(imp.min().item() for _, imp in importance_cache)
+        max_val = max(imp.max().item() for _, imp in importance_cache)
 
-        mean = all_importance.mean().item()
-        std = all_importance.std().item()
-        total_count = all_importance.numel()
+        # Compute total count
+        total_count = sum(imp.numel() for _, imp in importance_cache)
         target_count = int(sparsity * total_count)
 
+        log_memory(f"Value range: min={min_val:.6f}, max={max_val:.6f}, total_count={total_count}")
+
+        # Build histogram to estimate initial threshold
+        # Use 10000 bins for good resolution
+        num_bins = 10000
+        histogram = torch.zeros(num_bins)
+
+        log_memory(f"Building histogram with {num_bins} bins")
+        for _, importance in importance_cache:
+            # torch.histc is memory efficient - doesn't keep the full tensor
+            hist = torch.histc(importance, bins=num_bins, min=min_val, max=max_val)
+            histogram += hist
+
+        # Find threshold from histogram
+        cumsum = histogram.cumsum(0)
+        # Find first bin where cumsum >= target_count
+        threshold_bin = (cumsum >= target_count).nonzero(as_tuple=True)[0]
+
+        if len(threshold_bin) > 0:
+            bin_idx = threshold_bin[0].item()
+            # Convert bin index to actual value
+            bin_width = (max_val - min_val) / num_bins
+            initial_threshold = min_val + (bin_idx + 0.5) * bin_width
+            log_memory(f"Histogram-based threshold: bin {bin_idx}/{num_bins}, threshold={initial_threshold:.6f}")
+        else:
+            # Fallback: use midpoint
+            initial_threshold = (min_val + max_val) / 2
+            log_memory(f"WARNING: Could not find threshold from histogram, using midpoint={initial_threshold:.6f}")
+
+        # Also compute mean/std for diagnostics
+        mean = sum(imp.sum().item() for _, imp in importance_cache) / total_count
+        # For std, use the simple formula (not perfectly accurate but good enough for logging)
+        sum_sq = sum((imp ** 2).sum().item() for _, imp in importance_cache)
+        variance = (sum_sq / total_count) - (mean ** 2)
+        std = variance ** 0.5 if variance > 0 else 0.0
+
         log_memory(f"Statistics: mean={mean:.6f}, std={std:.6f}, target_count={target_count}")
-
-        # Find min/max across all layers for bounds
-        min_val = all_importance.min().item()
-        max_val = all_importance.max().item()
-
-        # Initial threshold estimate using normal approximation
-        if sparsity < 0.5:
-            p = sparsity
-            sign = -1
-        else:
-            p = 1 - sparsity
-            sign = 1
-
-        log_memory(f"Normal approximation: sparsity={sparsity:.6f}, p={p:.6f}, sign={sign}")
-
-        if p > 0.0 and p < 1.0:
-            t = (-2 * torch.log(torch.tensor(p))) ** 0.5
-            c0, c1, c2 = 2.515517, 0.802853, 0.010328
-            d1, d2, d3 = 1.432788, 0.189269, 0.001308
-            z_approx = sign * (t - (c0 + c1*t + c2*t*t) / (1 + d1*t + d2*t*t + d3*t*t*t))
-            log_memory(f"z-score approximation: t={t:.6f}, z_approx={z_approx:.6f}")
-        else:
-            z_approx = 0.0
-            log_memory(f"z-score approximation: p out of range, z_approx=0.0")
-
-        initial_threshold_unclamped = mean + z_approx * std
-        log_memory(f"Threshold before clamping: {initial_threshold_unclamped:.6f} = {mean:.6f} + {z_approx:.6f} * {std:.6f}")
-
-        # Clamp to valid range
-        initial_threshold = max(min_val, min(max_val, initial_threshold_unclamped))
-
-        if initial_threshold != initial_threshold_unclamped:
-            log_memory(f"WARNING: Threshold clamped from {initial_threshold_unclamped:.6f} to {initial_threshold:.6f}")
 
         # Binary search for optimal threshold
         log_memory(f"Binary search: initial_threshold={initial_threshold:.6f}, bounds=[{min_val:.6f}, {max_val:.6f}]")
