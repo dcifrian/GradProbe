@@ -782,6 +782,86 @@ class GradProbe:
 
         return gradient
 
+    def _apply_gradient_filtering_single_layer(
+        self,
+        layer_name: str,
+        tentative_masks: Dict[str, torch.Tensor],
+        dataloader: torch.utils.data.DataLoader,
+        loss_fn: Callable,
+        num_batches: int,
+        reduction_factor: float,
+        gradient_threshold: float
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Apply gradient filtering to a single layer.
+
+        This is the core GradProbe algorithm for one layer:
+        1. Compute original gradients for the layer
+        2. Apply tentative reduction to the layer
+        3. Compute modified gradients for the layer
+        4. Compare gradients and decide final pruning mask
+        5. Restore original layer state
+
+        Args:
+            layer_name: Name of the layer to process
+            tentative_masks: Dictionary with tentative mask for this layer
+            dataloader: DataLoader for computing gradients
+            loss_fn: Loss function
+            num_batches: Number of batches for gradient computation
+            reduction_factor: Factor to reduce tentative weights by
+            gradient_threshold: Relative gradient increase threshold
+
+        Returns:
+            Dictionary with final mask for this layer
+        """
+        # Get the parameter
+        layer_param = dict(self.model.named_parameters())[layer_name]
+
+        # Save original state for this layer
+        original_layer_state = layer_param.data.clone()
+
+        # Step 1: Compute original gradients for this layer
+        original_grad = self._compute_gradients_single_layer(
+            dataloader=dataloader,
+            loss_fn=loss_fn,
+            num_batches=num_batches,
+            layer_name=layer_name
+        )
+
+        # Step 2: Apply tentative reduction to this layer
+        tentative_mask = tentative_masks[layer_name]
+        # Move mask to same device as param for reduction
+        if tentative_mask.device != layer_param.device:
+            tentative_mask_device = tentative_mask.to(layer_param.device)
+        else:
+            tentative_mask_device = tentative_mask
+        layer_param.data[tentative_mask_device] *= reduction_factor
+
+        # Step 3: Compute modified gradients for this layer
+        modified_grad = self._compute_gradients_single_layer(
+            dataloader=dataloader,
+            loss_fn=loss_fn,
+            num_batches=num_batches,
+            layer_name=layer_name
+        )
+
+        # Step 4: Compare gradients and decide final mask
+        original_grads = {layer_name: original_grad}
+        modified_grads = {layer_name: modified_grad}
+
+        final_masks = self._compare_gradients_and_decide(
+            original_grads=original_grads,
+            modified_grads=modified_grads,
+            tentative_masks=tentative_masks,
+            gradient_threshold=gradient_threshold,
+            verbose=False  # Don't print stats for individual layers
+        )
+
+        # Step 5: Restore original layer state
+        layer_param.data.copy_(original_layer_state)
+
+        return final_masks
+
     def get_sparsity(self) -> float:
         """
         Get the current sparsity of the model.
@@ -1149,6 +1229,14 @@ class GradProbe:
                     name: param.data.clone() for name, param in self.model.named_parameters()
                 }
 
+        # OPTIMIZATION: Call strategy once for all layers instead of once per layer
+        # This dramatically reduces redundant computation since weights haven't changed
+        if verbose:
+            print(f"\nComputing {self.strategy.get_name()} importance scores for all layers...")
+        cached_strategy_masks = self.strategy.select_weights_to_prune(self.model, sparsity)
+        if verbose:
+            print(f"Cached tentative masks for {len(cached_strategy_masks)} parameters")
+
         all_masks = {}
 
         # Accumulators for caching gradients and masks across all layers
@@ -1170,15 +1258,28 @@ class GradProbe:
                 if name != layer_name:
                     param.requires_grad = False
 
-            # Prune this layer only
-            layer_masks = self.prune(
+            # Get cached tentative mask for this layer
+            if layer_name not in cached_strategy_masks:
+                # Shouldn't happen, but fallback to empty mask
+                all_masks[layer_name] = torch.zeros(layer_param.data.shape, dtype=torch.bool, device='cpu')
+                if verbose:
+                    print(f"  Warning: No cached mask for {layer_name}, skipping")
+                # Restore requires_grad
+                for name, param in self.model.named_parameters():
+                    param.requires_grad = original_requires_grad[name]
+                continue
+
+            tentative_mask_for_layer = {layer_name: cached_strategy_masks[layer_name]}
+
+            # Apply gradient filtering for this layer only
+            layer_masks = self._apply_gradient_filtering_single_layer(
+                layer_name=layer_name,
+                tentative_masks=tentative_mask_for_layer,
                 dataloader=dataloader,
                 loss_fn=loss_fn,
-                sparsity=sparsity,
                 num_batches=num_batches,
                 reduction_factor=reduction_factor,
-                gradient_threshold=gradient_threshold,
-                verbose=False
+                gradient_threshold=gradient_threshold
             )
 
             # Store masks for this layer
