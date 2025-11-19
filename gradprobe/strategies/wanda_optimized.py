@@ -174,7 +174,25 @@ class WANDAPruningOptimized(PruningStrategy):
         num_bins_fine = 10000
 
         # Check if we have cached histogram (for layerwise pruning speedup)
+        # IMPORTANT: Only use cached histogram if value ranges are similar enough
+        # Different layers can have vastly different importance score distributions
+        use_cached_histogram = False
         if self._cached_histogram_info is not None:
+            cached = self._cached_histogram_info
+            cached_range = cached['hist_max'] - cached['hist_min']
+            current_range = max_val - min_val
+
+            # Only use cache if ranges are within 2x of each other
+            range_ratio = max(cached_range, current_range) / max(min(cached_range, current_range), 1e-10)
+            if range_ratio <= 2.0:
+                use_cached_histogram = True
+                log_memory(f"Range ratio {range_ratio:.2f}x - using cached histogram")
+            else:
+                log_memory(f"Range ratio {range_ratio:.2f}x too different - rebuilding histogram")
+                log_memory(f"  Cached range: [{cached['hist_min']:.6f}, {cached['hist_max']:.6f}]")
+                log_memory(f"  Current range: [{min_val:.6f}, {max_val:.6f}]")
+
+        if use_cached_histogram:
             # Use cached histogram from first layer (no torch.histc!)
             log_memory(f"Using cached histogram from first layer (skipping torch.histc)")
             cached = self._cached_histogram_info
@@ -183,6 +201,32 @@ class WANDAPruningOptimized(PruningStrategy):
             hist_min = cached['hist_min']
             hist_max = cached['hist_max']
             bin_width_coarse = cached['bin_width_coarse']
+
+            # DEBUG: Check how well cached histogram matches current layer
+            log_debug = get_logger().debug
+            log_debug(f"=== HISTOGRAM MATCH CHECK ===")
+            # Build actual histogram for current layer (just for diagnostics)
+            actual_histogram = torch.zeros(len(histogram))
+            for idx, (name, importance) in enumerate(importance_cache):
+                importance_f32 = importance.float()
+                hist = torch.histc(importance_f32, bins=len(histogram), min=hist_min, max=hist_max)
+                actual_histogram += hist
+            actual_cumsum = actual_histogram.cumsum(0)
+
+            # Find where target falls in cached vs actual
+            cached_bin_idx = (cumsum >= target_count).nonzero(as_tuple=True)[0]
+            actual_bin_idx = (actual_cumsum >= target_count).nonzero(as_tuple=True)[0]
+
+            if len(cached_bin_idx) > 0 and len(actual_bin_idx) > 0:
+                cached_bin = cached_bin_idx[0].item()
+                actual_bin = actual_bin_idx[0].item()
+                log_debug(f"Target {target_count} elements ({sparsity*100:.1f}%):")
+                log_debug(f"  Cached histogram suggests bin {cached_bin}")
+                log_debug(f"  Actual distribution is at bin {actual_bin}")
+                log_debug(f"  Difference: {actual_bin - cached_bin} bins")
+                if abs(actual_bin - cached_bin) > 50:
+                    log_debug(f"  WARNING: Large mismatch between cached and actual!")
+            log_debug(f"============================")
 
             # Use cached histogram to find target bin
             coarse_bin_idx = (cumsum >= target_count).nonzero(as_tuple=True)[0]
@@ -252,7 +296,7 @@ class WANDAPruningOptimized(PruningStrategy):
                     log_memory(f"Cached: Using coarse estimate: threshold={initial_threshold:.6f}")
 
         # Build histogram from scratch if no cache or cache was invalid
-        if self._cached_histogram_info is None:
+        if not use_cached_histogram:
             histogram = torch.zeros(num_bins_coarse)
             eps = (max_val - min_val) * 1e-6 if max_val > min_val else 1e-6
             hist_min = min_val - eps
@@ -425,6 +469,20 @@ class WANDAPruningOptimized(PruningStrategy):
                 self._cached_sparsity = sparsity
                 log_memory(f"Cached histogram (coarse + fine) for future layers at sparsity={sparsity:.4f}")
 
+                # DEBUG: Log histogram distribution
+                log_debug = get_logger().debug
+                log_debug(f"=== CACHED HISTOGRAM DISTRIBUTION ===")
+                log_debug(f"Histogram range: [{hist_min:.6f}, {hist_max:.6f}], bins: {len(histogram)}")
+                log_debug(f"Bin width: {bin_width_coarse:.6f}")
+                log_debug(f"Top 10 bins by count:")
+                sorted_bins = sorted(enumerate(histogram), key=lambda x: x[1], reverse=True)[:10]
+                for bin_idx, count in sorted_bins:
+                    bin_start = hist_min + bin_idx * bin_width_coarse
+                    bin_end = hist_min + (bin_idx + 1) * bin_width_coarse
+                    pct = 100.0 * count / total_count
+                    log_debug(f"  Bin {bin_idx}: [{bin_start:.6f}, {bin_end:.6f}] has {count:.0f} elements ({pct:.1f}%)")
+                log_debug(f"=====================================")
+
         # Clamp to actual data range
         initial_threshold = max(min_val, min(max_val, initial_threshold))
 
@@ -525,16 +583,32 @@ class WANDAPruningOptimized(PruningStrategy):
                                     needed_count = int(sparsity * total_count)
                                     additional_needed = int((needed_count - current_count) * 1.2)  # 20% buffer
 
+                                    log_debug(f"=== UPWARD EXPANSION ===")
+                                    log_debug(f"Current bin: {current_bin}, high={high:.6f}")
+                                    log_debug(f"Actual sparsity: {actual_sparsity*100:.2f}%, target: {sparsity*100:.2f}%")
+                                    log_debug(f"Need ~{additional_needed} more elements")
+
                                     # Sum histogram bins starting from next bin until we accumulate enough elements
                                     accumulated = 0
                                     target_bin = current_bin + 1
+                                    log_debug(f"Starting from bin {target_bin}, counting forward...")
                                     while target_bin < len(histogram) and accumulated < additional_needed:
-                                        accumulated += histogram[target_bin].item()
+                                        bin_count = histogram[target_bin].item()
+                                        accumulated += bin_count
+                                        log_debug(f"  Bin {target_bin} has {bin_count:.0f} elements, accumulated={accumulated:.0f}")
                                         target_bin += 1
 
+                                    # After the loop, target_bin has been incremented one extra time
+                                    log_debug(f"After loop: target_bin={target_bin}, accumulated={accumulated}")
+
                                     # Jump to that bin (or at least +1 bin to make progress)
+                                    # target_bin is one more than the last bin we counted
+                                    # But we want to set high to the END of the last bin we counted
+                                    # So we use target_bin directly (which is last_counted_bin + 1)
                                     target_bin = max(target_bin, current_bin + 1)
                                     new_high = min(max_val, hist_min + target_bin * bin_width_coarse)
+                                    log_debug(f"Final target_bin: {target_bin}, new_high={new_high:.6f}")
+                                    log_debug(f"========================")
                                     log_memory(f"Jumping from bin {current_bin} to bin {target_bin-1} (need ~{additional_needed} more elements, accumulated {accumulated})")
                                 else:
                                     # Outside histogram range - expand to max_val
@@ -559,18 +633,43 @@ class WANDAPruningOptimized(PruningStrategy):
                                     needed_count = int(sparsity * total_count)
                                     reduction_needed = int((current_count - needed_count) * 1.2)  # 20% buffer
 
+                                    log_debug(f"=== DOWNWARD EXPANSION ===")
+                                    log_debug(f"Current bin: {current_bin}, low={low:.6f}")
+                                    log_debug(f"Actual sparsity: {actual_sparsity*100:.2f}%, target: {sparsity*100:.2f}%")
+                                    log_debug(f"Need ~{reduction_needed} fewer elements")
+
                                     # Sum histogram bins starting from previous bin (backwards) until we accumulate enough elements
                                     accumulated = 0
                                     target_bin = current_bin - 1
+                                    log_debug(f"Starting from bin {target_bin}, counting backwards...")
                                     while target_bin >= 0 and accumulated < reduction_needed:
-                                        accumulated += histogram[target_bin].item()
+                                        bin_count = histogram[target_bin].item()
+                                        accumulated += bin_count
+                                        log_debug(f"  Bin {target_bin} has {bin_count:.0f} elements, accumulated={accumulated:.0f}")
                                         target_bin -= 1
 
-                                    # Jump to that bin (or at least -1 bin to make progress)
-                                    target_bin = max(0, target_bin)
-                                    target_bin = min(target_bin, current_bin - 1)
+                                    # After the loop, target_bin has been decremented one extra time
+                                    # target_bin is now the bin BEFORE the last one we counted
+                                    # We want to jump to the last bin we counted
+                                    log_debug(f"After loop: target_bin={target_bin}, accumulated={accumulated}")
+
+                                    # Clamp and adjust
+                                    # If current_bin is 0, we can't go lower
+                                    if current_bin == 0:
+                                        target_bin = 0
+                                        log_debug(f"Already at bin 0, cannot expand downward!")
+                                    else:
+                                        # target_bin is now one less than the bin we want (because loop decremented it)
+                                        # Increment it back
+                                        target_bin += 1
+                                        # Clamp to valid range
+                                        target_bin = max(0, target_bin)
+                                        target_bin = min(target_bin, current_bin - 1)
+
                                     new_low = max(min_val, hist_min + target_bin * bin_width_coarse)
-                                    log_memory(f"Jumping from bin {current_bin} to bin {target_bin+1} (need ~{reduction_needed} fewer elements, accumulated {accumulated})")
+                                    log_debug(f"Final target_bin: {target_bin}, new_low={new_low:.6f}")
+                                    log_debug(f"========================")
+                                    log_memory(f"Jumping from bin {current_bin} to bin {target_bin} (need ~{reduction_needed} fewer elements, accumulated {accumulated})")
                                 else:
                                     # Outside histogram range - expand to min_val
                                     new_low = min_val
