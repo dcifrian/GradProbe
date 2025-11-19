@@ -8,6 +8,7 @@ information to make intelligent pruning decisions.
 from .pruner import GradProbe
 from .strategies import PruningStrategy, MagnitudePruning, WANDAPruning
 from .models import SimpleMLP, TinyMLP
+from .logger import Logger, LogLevel, get_logger
 
 __version__ = "0.1.0"
 
@@ -18,4 +19,7 @@ __all__ = [
     'WANDAPruning',
     'SimpleMLP',
     'TinyMLP',
+    'Logger',
+    'LogLevel',
+    'get_logger',
 ]
