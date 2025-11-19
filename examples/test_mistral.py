@@ -35,7 +35,7 @@ SEQ_LENGTH = 128  # Reduced from 512 to save memory
 NUM_BATCHES_GRADIENT = 10  # Reduced from 50 to save memory and time
 NUM_BATCHES_WANDA = 5  # Reduced from 20 to save memory
 NUM_SEQUENCES = 3  # Limit number of sequences to save memory (like profiler)
-LOW_MEMORY_MODE = True  # CRITICAL for large models - disables gradient caching
+LOW_MEMORY_MODE = False  # CRITICAL for large models - disables gradient caching
 
 # Calibration text - using more diverse content for larger model
 CALIBRATION_TEXT = """The quick brown fox jumps over the lazy dog. This pangram contains every letter of the English alphabet at least once. It has been used for decades to test typewriters and computer keyboards.
@@ -239,7 +239,7 @@ results = pruner.iterative_prune(
     layerwise=True,
     layer_order="size",  # Prune largest layers first
     verbose=True,
-    compare_baseline=True,
+    compare_baseline=False,
     tune_threshold_on_fail=True,
     experimental_tune_both_steps=True
 )

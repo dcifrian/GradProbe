@@ -1312,8 +1312,8 @@ class GradProbe:
                 if hasattr(self, '_cached_tentative_masks'):
                     del self._cached_tentative_masks
                 # Clear CUDA cache if on GPU
-                if self.device == 'cuda':
-                    torch.cuda.empty_cache()
+                #if self.device == 'cuda':
+                    #torch.cuda.empty_cache()
 
             # Restore requires_grad
             for name, param in self.model.named_parameters():
@@ -1869,16 +1869,9 @@ class GradProbe:
                 get_logger().info(f"Low memory mode: ENABLED")
             get_logger().info("")
 
-        # Save original model state
-        # In low_memory_mode, save to CPU to avoid doubling GPU memory usage
-        if self.low_memory_mode:
-            original_state_backup = {
-                name: param.data.cpu().clone() for name, param in self.model.named_parameters()
-            }
-        else:
-            original_state_backup = {
-                name: param.data.clone() for name, param in self.model.named_parameters()
-            }
+        original_state_backup = {
+            name: param.data.cpu().clone() for name, param in self.model.named_parameters()
+        }
 
         # Measure initial accuracy
         initial_accuracy = eval_fn(self.model)
@@ -1977,14 +1970,9 @@ class GradProbe:
             # Compare with baseline (strategy-only without gradient filtering) if requested
             if compare_baseline:
                 # Save gradient-filtered state
-                if self.low_memory_mode:
-                    gradient_state = {
-                        name: param.data.cpu().clone() for name, param in self.model.named_parameters()
-                    }
-                else:
-                    gradient_state = {
-                        name: param.data.clone() for name, param in self.model.named_parameters()
-                    }
+                gradient_state = {
+                    name: param.data.cpu().clone() for name, param in self.model.named_parameters()
+                }
 
                 # Get what strategy-only would select at this target sparsity
                 # (without gradient filtering)
