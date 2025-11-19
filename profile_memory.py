@@ -14,6 +14,7 @@ import tracemalloc
 from dataclasses import dataclass
 from typing import Dict, List
 import psutil
+from gradprobe import get_logger
 
 @dataclass
 class MemorySnapshot:
@@ -137,26 +138,26 @@ class MemoryProfiler:
 
     def print_snapshot(self, snapshot: MemorySnapshot):
         """Print a single snapshot."""
-        print(f"\n{'='*70}")
-        print(f"Stage: {snapshot.stage}")
-        print(f"{'='*70}")
-        print(f"Process Memory:")
-        print(f"  RSS: {snapshot.process_rss_mb:.2f} MB")
-        print(f"  VMS: {snapshot.process_vms_mb:.2f} MB")
-        print(f"Python Allocated: {snapshot.python_allocated_mb:.2f} MB")
-        print(f"PyTorch Memory:")
-        print(f"  Allocated: {snapshot.torch_allocated_mb:.2f} MB")
-        print(f"  Reserved: {snapshot.torch_reserved_mb:.2f} MB")
-        print(f"  Cached: {snapshot.torch_cached_mb:.2f} MB")
+        get_logger().memory(f"\n{'='*70}")
+        get_logger().memory(f"Stage: {snapshot.stage}")
+        get_logger().memory(f"{'='*70}")
+        get_logger().memory(f"Process Memory:")
+        get_logger().memory(f"  RSS: {snapshot.process_rss_mb:.2f} MB")
+        get_logger().memory(f"  VMS: {snapshot.process_vms_mb:.2f} MB")
+        get_logger().memory(f"Python Allocated: {snapshot.python_allocated_mb:.2f} MB")
+        get_logger().memory(f"PyTorch Memory:")
+        get_logger().memory(f"  Allocated: {snapshot.torch_allocated_mb:.2f} MB")
+        get_logger().memory(f"  Reserved: {snapshot.torch_reserved_mb:.2f} MB")
+        get_logger().memory(f"  Cached: {snapshot.torch_cached_mb:.2f} MB")
 
         if snapshot.tensors:
-            print(f"\nTracked Tensors:")
+            get_logger().memory(f"\nTracked Tensors:")
             total_tensor_mb = 0
             for name, size_bytes in sorted(snapshot.tensors.items(), key=lambda x: x[1], reverse=True)[:10]:
                 size_mb = size_bytes / 1024 / 1024
                 total_tensor_mb += size_mb
-                print(f"  {name}: {size_mb:.2f} MB")
-            print(f"  Total (top 10): {total_tensor_mb:.2f} MB")
+                get_logger().memory(f"  {name}: {size_mb:.2f} MB")
+            get_logger().memory(f"  Total (top 10): {total_tensor_mb:.2f} MB")
 
     def print_all_snapshots(self):
         """Print all snapshots."""
@@ -166,35 +167,35 @@ class MemoryProfiler:
     def print_summary(self):
         """Print summary comparing all snapshots."""
         if not self.snapshots:
-            print("No snapshots taken")
+            get_logger().memory("No snapshots taken")
             return
 
-        print(f"\n{'='*70}")
-        print("MEMORY PROFILE SUMMARY")
-        print(f"{'='*70}")
-        print(f"{'Stage':<40} {'Process RSS (MB)':<20} {'Delta (MB)':<15}")
-        print(f"{'-'*70}")
+        get_logger().memory(f"\n{'='*70}")
+        get_logger().memory("MEMORY PROFILE SUMMARY")
+        get_logger().memory(f"{'='*70}")
+        get_logger().memory(f"{'Stage':<40} {'Process RSS (MB)':<20} {'Delta (MB)':<15}")
+        get_logger().memory(f"{'-'*70}")
 
         baseline_rss = self.snapshots[0].process_rss_mb
         for snapshot in self.snapshots:
             delta = snapshot.process_rss_mb - baseline_rss
-            print(f"{snapshot.stage:<40} {snapshot.process_rss_mb:>15.2f} {delta:>15.2f}")
+            get_logger().memory(f"{snapshot.stage:<40} {snapshot.process_rss_mb:>15.2f} {delta:>15.2f}")
 
-        print(f"\n{'='*70}")
-        print("PEAK MEMORY USAGE")
-        print(f"{'='*70}")
+        get_logger().memory(f"\n{'='*70}")
+        get_logger().memory("PEAK MEMORY USAGE")
+        get_logger().memory(f"{'='*70}")
 
         max_snapshot = max(self.snapshots, key=lambda s: s.process_rss_mb)
-        print(f"Stage: {max_snapshot.stage}")
-        print(f"Process RSS: {max_snapshot.process_rss_mb:.2f} MB")
-        print(f"Process VMS: {max_snapshot.process_vms_mb:.2f} MB")
-        print(f"Python Allocated: {max_snapshot.python_allocated_mb:.2f} MB")
-        print(f"PyTorch Allocated: {max_snapshot.torch_allocated_mb:.2f} MB")
-        print(f"PyTorch Reserved: {max_snapshot.torch_reserved_mb:.2f} MB")
+        get_logger().memory(f"Stage: {max_snapshot.stage}")
+        get_logger().memory(f"Process RSS: {max_snapshot.process_rss_mb:.2f} MB")
+        get_logger().memory(f"Process VMS: {max_snapshot.process_vms_mb:.2f} MB")
+        get_logger().memory(f"Python Allocated: {max_snapshot.python_allocated_mb:.2f} MB")
+        get_logger().memory(f"PyTorch Allocated: {max_snapshot.torch_allocated_mb:.2f} MB")
+        get_logger().memory(f"PyTorch Reserved: {max_snapshot.torch_reserved_mb:.2f} MB")
 
-        print(f"\n{'='*70}")
-        print("MEMORY INCREASE BY STAGE")
-        print(f"{'='*70}")
+        get_logger().memory(f"\n{'='*70}")
+        get_logger().memory("MEMORY INCREASE BY STAGE")
+        get_logger().memory(f"{'='*70}")
 
         for i in range(1, len(self.snapshots)):
             prev = self.snapshots[i-1]
@@ -202,9 +203,9 @@ class MemoryProfiler:
             delta_rss = curr.process_rss_mb - prev.process_rss_mb
             delta_torch = curr.torch_allocated_mb - prev.torch_allocated_mb
 
-            print(f"\n{prev.stage} -> {curr.stage}")
-            print(f"  Process RSS delta: {delta_rss:+.2f} MB")
-            print(f"  PyTorch allocated delta: {delta_torch:+.2f} MB")
+            get_logger().memory(f"\n{prev.stage} -> {curr.stage}")
+            get_logger().memory(f"  Process RSS delta: {delta_rss:+.2f} MB")
+            get_logger().memory(f"  PyTorch allocated delta: {delta_torch:+.2f} MB")
 
 
 def analyze_model_memory(model):
@@ -212,11 +213,11 @@ def analyze_model_memory(model):
     total_params = 0
     total_bytes = 0
 
-    print(f"\n{'='*70}")
-    print("MODEL PARAMETER MEMORY ANALYSIS")
-    print(f"{'='*70}")
-    print(f"{'Parameter Name':<50} {'Shape':<25} {'Size (MB)':<15}")
-    print(f"{'-'*70}")
+    get_logger().memory(f"\n{'='*70}")
+    get_logger().memory("MODEL PARAMETER MEMORY ANALYSIS")
+    get_logger().memory(f"{'='*70}")
+    get_logger().memory(f"{'Parameter Name':<50} {'Shape':<25} {'Size (MB)':<15}")
+    get_logger().memory(f"{'-'*70}")
 
     param_info = []
     for name, param in model.named_parameters():
@@ -232,11 +233,11 @@ def analyze_model_memory(model):
 
     for name, shape, num_bytes in param_info:
         size_mb = num_bytes / 1024 / 1024
-        print(f"{name:<50} {shape:<25} {size_mb:>12.2f}")
+        get_logger().memory(f"{name:<50} {shape:<25} {size_mb:>12.2f}")
 
-    print(f"{'-'*70}")
-    print(f"{'TOTAL':<50} {total_params:>25,} {total_bytes/1024/1024:>12.2f}")
-    print(f"{'='*70}")
+    get_logger().memory(f"{'-'*70}")
+    get_logger().memory(f"{'TOTAL':<50} {total_params:>25,} {total_bytes/1024/1024:>12.2f}")
+    get_logger().memory(f"{'='*70}")
 
     return total_params, total_bytes
 
@@ -245,11 +246,11 @@ def analyze_gradient_memory(gradients_dict):
     """Analyze memory used by gradients."""
     total_bytes = 0
 
-    print(f"\n{'='*70}")
-    print("GRADIENT MEMORY ANALYSIS")
-    print(f"{'='*70}")
-    print(f"{'Parameter Name':<50} {'Shape':<25} {'Size (MB)':<15}")
-    print(f"{'-'*70}")
+    get_logger().memory(f"\n{'='*70}")
+    get_logger().memory("GRADIENT MEMORY ANALYSIS")
+    get_logger().memory(f"{'='*70}")
+    get_logger().memory(f"{'Parameter Name':<50} {'Shape':<25} {'Size (MB)':<15}")
+    get_logger().memory(f"{'-'*70}")
 
     grad_info = []
     for name, grad in gradients_dict.items():
@@ -263,20 +264,20 @@ def analyze_gradient_memory(gradients_dict):
 
     for name, shape, num_bytes in grad_info:
         size_mb = num_bytes / 1024 / 1024
-        print(f"{name:<50} {shape:<25} {size_mb:>12.2f}")
+        get_logger().memory(f"{name:<50} {shape:<25} {size_mb:>12.2f}")
 
-    print(f"{'-'*70}")
-    print(f"{'TOTAL':<50} {'':>25} {total_bytes/1024/1024:>12.2f}")
-    print(f"{'='*70}")
+    get_logger().memory(f"{'-'*70}")
+    get_logger().memory(f"{'TOTAL':<50} {'':>25} {total_bytes/1024/1024:>12.2f}")
+    get_logger().memory(f"{'='*70}")
 
     return total_bytes
 
 
 def estimate_activation_memory(model, batch_size, seq_length):
     """Estimate activation memory for transformer models."""
-    print(f"\n{'='*70}")
-    print("ACTIVATION MEMORY ESTIMATION")
-    print(f"{'='*70}")
+    get_logger().memory(f"\n{'='*70}")
+    get_logger().memory("ACTIVATION MEMORY ESTIMATION")
+    get_logger().memory(f"{'='*70}")
 
     # Get model config if available
     if hasattr(model, 'config'):
@@ -285,13 +286,13 @@ def estimate_activation_memory(model, batch_size, seq_length):
         num_layers = config.num_hidden_layers
         num_heads = config.num_attention_heads
 
-        print(f"Model: {config.model_type}")
-        print(f"Hidden size: {hidden_size}")
-        print(f"Number of layers: {num_layers}")
-        print(f"Number of attention heads: {num_heads}")
-        print(f"Batch size: {batch_size}")
-        print(f"Sequence length: {seq_length}")
-        print()
+        get_logger().memory(f"Model: {config.model_type}")
+        get_logger().memory(f"Hidden size: {hidden_size}")
+        get_logger().memory(f"Number of layers: {num_layers}")
+        get_logger().memory(f"Number of attention heads: {num_heads}")
+        get_logger().memory(f"Batch size: {batch_size}")
+        get_logger().memory(f"Sequence length: {seq_length}")
+        get_logger().memory("")
 
         # Estimate activation memory per layer
         # Each layer has:
@@ -307,27 +308,30 @@ def estimate_activation_memory(model, batch_size, seq_length):
         per_layer_mb = hidden_states_mb + attention_scores_mb + ffn_intermediate_mb
         total_activation_mb = per_layer_mb * num_layers
 
-        print(f"Estimated memory per layer:")
-        print(f"  Hidden states: {hidden_states_mb:.2f} MB")
-        print(f"  Attention scores: {attention_scores_mb:.2f} MB")
-        print(f"  FFN intermediate: {ffn_intermediate_mb:.2f} MB")
-        print(f"  Total per layer: {per_layer_mb:.2f} MB")
-        print(f"\nTotal activation memory (all layers): {total_activation_mb:.2f} MB")
-        print(f"{'='*70}")
+        get_logger().memory(f"Estimated memory per layer:")
+        get_logger().memory(f"  Hidden states: {hidden_states_mb:.2f} MB")
+        get_logger().memory(f"  Attention scores: {attention_scores_mb:.2f} MB")
+        get_logger().memory(f"  FFN intermediate: {ffn_intermediate_mb:.2f} MB")
+        get_logger().memory(f"  Total per layer: {per_layer_mb:.2f} MB")
+        get_logger().memory(f"\nTotal activation memory (all layers): {total_activation_mb:.2f} MB")
+        get_logger().memory(f"{'='*70}")
 
         return total_activation_mb
     else:
-        print("Model config not available for activation estimation")
-        print(f"{'='*70}")
+        get_logger().memory("Model config not available for activation estimation")
+        get_logger().memory(f"{'='*70}")
         return 0
 
 
 if __name__ == "__main__":
-    print("Memory profiler utility for GradProbe")
-    print("Usage: import this module and use MemoryProfiler class")
-    print("\nExample:")
-    print("  profiler = MemoryProfiler()")
-    print("  profiler.snapshot('initial')")
-    print("  # ... do some work ...")
-    print("  profiler.snapshot('after_work')")
-    print("  profiler.print_summary()")
+    from gradprobe import Logger, LogLevel
+    logger = Logger(program_name='profile_memory', level=LogLevel.INFO)
+
+    logger.info("Memory profiler utility for GradProbe")
+    logger.info("Usage: import this module and use MemoryProfiler class")
+    logger.info("\nExample:")
+    logger.info("  profiler = MemoryProfiler()")
+    logger.info("  profiler.snapshot('initial')")
+    logger.info("  # ... do some work ...")
+    logger.info("  profiler.snapshot('after_work')")
+    logger.info("  profiler.print_summary()")
