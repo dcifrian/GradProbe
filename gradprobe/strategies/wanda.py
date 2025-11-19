@@ -13,6 +13,7 @@ import time
 import gc
 
 from .base import PruningStrategy
+from ..logger import get_logger
 
 
 def log_memory(msg, log_file="/tmp/wanda_memory.log"):
@@ -30,7 +31,7 @@ def log_memory(msg, log_file="/tmp/wanda_memory.log"):
 
     with open(log_file, 'a') as f:
         f.write(log_line)
-    print(log_line.strip())
+    get_logger().memory(log_line.strip())
 
 
 class WANDAPruning(PruningStrategy):

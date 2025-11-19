@@ -12,6 +12,7 @@ from copy import deepcopy
 import gc
 
 from .strategies.base import PruningStrategy
+from .logger import get_logger
 
 
 class GradProbe:
@@ -65,7 +66,7 @@ class GradProbe:
         # Auto-detect device if requested
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            print(f"Auto-detected device: {device}")
+            get_logger().info(f"Auto-detected device: {device}")
 
         self.model = model.to(device)
         self.strategy = strategy
@@ -80,11 +81,11 @@ class GradProbe:
         self.grad_dtype = torch.float16 if use_fp16 else torch.float32
 
         if low_memory_mode:
-            print(f"Low memory mode enabled - will use layer-by-layer processing")
+            get_logger().info(f"Low memory mode enabled - will use layer-by-layer processing")
         if use_fp16:
-            print(f"FP16 mode enabled - gradients and saved states will use float16")
+            get_logger().info(f"FP16 mode enabled - gradients and saved states will use float16")
         if use_gradient_checkpointing:
-            print(f"Gradient checkpointing enabled - will trade compute for memory")
+            get_logger().info(f"Gradient checkpointing enabled - will trade compute for memory")
             self._enable_gradient_checkpointing()
 
     def _enable_gradient_checkpointing(self):
@@ -93,20 +94,20 @@ class GradProbe:
         if hasattr(self.model, 'gradient_checkpointing_enable'):
             try:
                 self.model.gradient_checkpointing_enable()
-                print("  ✓ Gradient checkpointing enabled on model")
+                get_logger().debug("  ✓ Gradient checkpointing enabled on model")
             except Exception as e:
-                print(f"  ⚠ Could not enable gradient checkpointing: {e}")
+                get_logger().warning(f"  ⚠ Could not enable gradient checkpointing: {e}")
         elif hasattr(self.model, 'config') and hasattr(self.model.config, 'use_cache'):
             # For transformer models, need to disable cache for gradient checkpointing
             try:
                 self.model.config.use_cache = False
                 if hasattr(self.model, 'gradient_checkpointing_enable'):
                     self.model.gradient_checkpointing_enable()
-                    print("  ✓ Gradient checkpointing enabled on model")
+                    get_logger().debug("  ✓ Gradient checkpointing enabled on model")
             except Exception as e:
-                print(f"  ⚠ Could not enable gradient checkpointing: {e}")
+                get_logger().warning(f"  ⚠ Could not enable gradient checkpointing: {e}")
         else:
-            print("  ⚠ Model does not support gradient checkpointing")
+            get_logger().warning("  ⚠ Model does not support gradient checkpointing")
 
     def prune(
         self,
@@ -141,15 +142,15 @@ class GradProbe:
             Dictionary mapping parameter names to pruning masks (True = pruned)
         """
         if verbose:
-            print(f"Starting GradProbe with {self.strategy.get_name()} strategy")
-            print(f"Target sparsity: {sparsity:.2%}")
-            print(f"Reduction factor: {reduction_factor}")
-            print(f"Gradient threshold: {gradient_threshold:.2%}")
+            get_logger().info(f"Starting GradProbe with {self.strategy.get_name()} strategy")
+            get_logger().info(f"Target sparsity: {sparsity:.2%}")
+            get_logger().info(f"Reduction factor: {reduction_factor}")
+            get_logger().info(f"Gradient threshold: {gradient_threshold:.2%}")
 
         # Use layer-by-layer streaming in low_memory_mode to dramatically reduce memory usage
         if self.low_memory_mode:
             if verbose:
-                print(f"\nUsing layer-by-layer gradient streaming (low memory mode)")
+                get_logger().info(f"\nUsing layer-by-layer gradient streaming (low memory mode)")
             return self._prune_layer_by_layer_streaming(
                 dataloader=dataloader,
                 loss_fn=loss_fn,
@@ -186,27 +187,27 @@ class GradProbe:
 
         # Step 1: Get initial gradients with original model
         if verbose:
-            print("\nStep 1: Computing gradients with original model...")
+            get_logger().info("\nStep 1: Computing gradients with original model...")
         original_gradients = self._compute_gradients(dataloader, loss_fn, num_batches)
 
         # Step 2: Use strategy to select weights to tentatively prune
         if verbose:
-            print(f"\nStep 2: Selecting weights using {self.strategy.get_name()} strategy...")
+            get_logger().info(f"\nStep 2: Selecting weights using {self.strategy.get_name()} strategy...")
         tentative_masks = self.strategy.select_weights_to_prune(self.model, sparsity)
 
         # Count tentative pruning candidates
         total_tentative = sum(mask.sum().item() for mask in tentative_masks.values())
         if verbose:
-            print(f"Tentative pruning candidates: {total_tentative}")
+            get_logger().info(f"Tentative pruning candidates: {total_tentative}")
 
         # Step 3: Set tentative weights to reduction_factor * original value
         if verbose:
-            print(f"\nStep 3: Reducing tentative weights to {reduction_factor}x...")
+            get_logger().info(f"\nStep 3: Reducing tentative weights to {reduction_factor}x...")
         self._apply_tentative_reduction(tentative_masks, reduction_factor)
 
         # Step 4: Compute gradients with reduced weights
         if verbose:
-            print("\nStep 4: Computing gradients with reduced weights...")
+            get_logger().info("\nStep 4: Computing gradients with reduced weights...")
         modified_gradients = self._compute_gradients(dataloader, loss_fn, num_batches)
 
         # Cache these for threshold tuning
@@ -216,7 +217,7 @@ class GradProbe:
 
         # Step 5: Compare gradients and make final pruning decisions
         if verbose:
-            print("\nStep 5: Comparing gradients and making pruning decisions...")
+            get_logger().info("\nStep 5: Comparing gradients and making pruning decisions...")
         final_masks = self._compare_gradients_and_decide(
             original_gradients,
             modified_gradients,
@@ -227,7 +228,7 @@ class GradProbe:
 
         # Step 6: Apply final pruning
         if verbose:
-            print("\nStep 6: Applying final pruning...")
+            get_logger().info("\nStep 6: Applying final pruning...")
         self._apply_final_pruning(final_masks)
 
         self.pruning_mask = final_masks
@@ -242,9 +243,9 @@ class GradProbe:
                 raise ValueError("eval_fn must be provided when compare_baseline=True")
 
             if verbose:
-                print("\n" + "="*60)
-                print("BASELINE COMPARISON")
-                print("="*60)
+                get_logger().info("\n" + "="*60)
+                get_logger().info("BASELINE COMPARISON")
+                get_logger().info("="*60)
 
             # Save gradient-pruned state
             if self.low_memory_mode:
@@ -278,14 +279,14 @@ class GradProbe:
                     param.data.copy_(gradient_pruned_state[name])
 
             if verbose:
-                print(f"Magnitude-only (all candidates):")
-                print(f"  Sparsity: {magnitude_sparsity:.2%}")
-                print(f"  Accuracy: {magnitude_accuracy:.2f}%")
-                print(f"\nGradient-filtered:")
-                print(f"  Sparsity: {gradient_sparsity:.2%}")
-                print(f"  Accuracy: {gradient_accuracy:.2f}%")
-                print(f"\nAccuracy gain from gradient filtering: {gradient_accuracy - magnitude_accuracy:+.2f}%")
-                print("="*60)
+                get_logger().info(f"Magnitude-only (all candidates):")
+                get_logger().info(f"  Sparsity: {magnitude_sparsity:.2%}")
+                get_logger().info(f"  Accuracy: {magnitude_accuracy:.2f}%")
+                get_logger().info(f"\nGradient-filtered:")
+                get_logger().info(f"  Sparsity: {gradient_sparsity:.2%}")
+                get_logger().info(f"  Accuracy: {gradient_accuracy:.2f}%")
+                get_logger().info(f"\nAccuracy gain from gradient filtering: {gradient_accuracy - magnitude_accuracy:+.2f}%")
+                get_logger().info("="*60)
 
         return final_masks
 
@@ -464,12 +465,12 @@ class GradProbe:
             stats['kept'] += (tentative_mask & ~final_mask).sum().item()
 
         if verbose:
-            print(f"  Tentative candidates: {stats['total_tentative']}")
-            print(f"  Final pruned: {stats['pruned']}")
-            print(f"  Restored (gradient increased): {stats['kept']}")
+            get_logger().info(f"  Tentative candidates: {stats['total_tentative']}")
+            get_logger().info(f"  Final pruned: {stats['pruned']}")
+            get_logger().info(f"  Restored (gradient increased): {stats['kept']}")
             if stats['total_tentative'] > 0:
                 prune_rate = stats['pruned'] / stats['total_tentative']
-                print(f"  Pruning rate from tentative: {prune_rate:.2%}")
+                get_logger().info(f"  Pruning rate from tentative: {prune_rate:.2%}")
 
         return final_masks
 
@@ -502,9 +503,9 @@ class GradProbe:
 
     def _print_pruning_statistics(self, masks: Dict[str, torch.Tensor]):
         """Print detailed pruning statistics."""
-        print("\n" + "="*60)
-        print("PRUNING STATISTICS")
-        print("="*60)
+        get_logger().info("\n" + "="*60)
+        get_logger().info("PRUNING STATISTICS")
+        get_logger().info("="*60)
 
         total_params = 0
         total_pruned = 0
@@ -521,12 +522,12 @@ class GradProbe:
 
             if param.requires_grad:
                 sparsity = pruned_count / param_count if param_count > 0 else 0
-                print(f"{name:40s}: {pruned_count:8d} / {param_count:8d} ({sparsity:6.2%})")
+                get_logger().info(f"{name:40s}: {pruned_count:8d} / {param_count:8d} ({sparsity:6.2%})")
 
         overall_sparsity = total_pruned / total_params if total_params > 0 else 0
-        print("="*60)
-        print(f"{'TOTAL':40s}: {total_pruned:8d} / {total_params:8d} ({overall_sparsity:6.2%})")
-        print("="*60)
+        get_logger().info("="*60)
+        get_logger().info(f"{'TOTAL':40s}: {total_pruned:8d} / {total_params:8d} ({overall_sparsity:6.2%})")
+        get_logger().info("="*60)
 
     def _prune_layer_by_layer_streaming(
         self,
@@ -565,12 +566,12 @@ class GradProbe:
 
         # Get tentative masks from strategy (this is cheap, just boolean masks)
         if verbose:
-            print(f"\nSelecting weights using {self.strategy.get_name()} strategy...")
+            get_logger().info(f"\nSelecting weights using {self.strategy.get_name()} strategy...")
         tentative_masks = self.strategy.select_weights_to_prune(self.model, sparsity)
 
         total_tentative = sum(mask.sum().item() for mask in tentative_masks.values())
         if verbose:
-            print(f"Tentative pruning candidates: {total_tentative}")
+            get_logger().info(f"Tentative pruning candidates: {total_tentative}")
 
         # Get all weight layers (2D or higher dimensional parameters)
         layer_params = []
@@ -579,15 +580,15 @@ class GradProbe:
                 layer_params.append((name, param))
 
         if verbose:
-            print(f"\nProcessing {len(layer_params)} layers sequentially...")
-            print(f"Memory savings: storing gradients for 1 layer at a time instead of all {len(layer_params)} layers")
+            get_logger().info(f"\nProcessing {len(layer_params)} layers sequentially...")
+            get_logger().info(f"Memory savings: storing gradients for 1 layer at a time instead of all {len(layer_params)} layers")
 
         # Process each layer individually
         final_masks = {}
 
         for layer_idx, (layer_name, layer_param) in enumerate(layer_params):
             if verbose and layer_idx % 5 == 0:  # Print progress every 5 layers
-                print(f"  Layer {layer_idx+1}/{len(layer_params)}: {layer_name}")
+                get_logger().debug(f"  Layer {layer_idx+1}/{len(layer_params)}: {layer_name}")
 
             # Skip if not in tentative masks
             if layer_name not in tentative_masks:
@@ -649,7 +650,7 @@ class GradProbe:
         self.pruning_mask = final_masks
 
         if verbose:
-            print(f"\nLayer-by-layer streaming complete!")
+            get_logger().info(f"\nLayer-by-layer streaming complete!")
             self._print_pruning_statistics(final_masks)
 
         # Compare with baseline if requested
@@ -658,9 +659,9 @@ class GradProbe:
                 raise ValueError("eval_fn must be provided when compare_baseline=True")
 
             if verbose:
-                print("\n" + "="*60)
-                print("BASELINE COMPARISON")
-                print("="*60)
+                get_logger().info("\n" + "="*60)
+                get_logger().info("BASELINE COMPARISON")
+                get_logger().info("="*60)
 
             # Save gradient-pruned state
             if self.use_fp16:
@@ -702,14 +703,14 @@ class GradProbe:
                         param.data.copy_(saved_state)
 
             if verbose:
-                print(f"Magnitude-only (all candidates):")
-                print(f"  Sparsity: {magnitude_sparsity:.2%}")
-                print(f"  Accuracy: {magnitude_accuracy:.2f}%")
-                print(f"\nGradient-filtered:")
-                print(f"  Sparsity: {gradient_sparsity:.2%}")
-                print(f"  Accuracy: {gradient_accuracy:.2f}%")
-                print(f"\nAccuracy gain from gradient filtering: {gradient_accuracy - magnitude_accuracy:+.2f}%")
-                print("="*60)
+                get_logger().info(f"Magnitude-only (all candidates):")
+                get_logger().info(f"  Sparsity: {magnitude_sparsity:.2%}")
+                get_logger().info(f"  Accuracy: {magnitude_accuracy:.2f}%")
+                get_logger().info(f"\nGradient-filtered:")
+                get_logger().info(f"  Sparsity: {gradient_sparsity:.2%}")
+                get_logger().info(f"  Accuracy: {gradient_accuracy:.2f}%")
+                get_logger().info(f"\nAccuracy gain from gradient filtering: {gradient_accuracy - magnitude_accuracy:+.2f}%")
+                get_logger().info("="*60)
 
         return final_masks
 
@@ -961,18 +962,18 @@ class GradProbe:
             batch_count += 1
 
         if verbose:
-            print("="*70)
-            print("GRADIENT THRESHOLD SWEEP")
-            print("="*70)
-            print(f"Testing {len(thresholds)} threshold values...")
-            print(f"Target sparsity: {sparsity:.2%}")
-            print(f"Using {len(cached_batches)} cached batches for consistent comparison")
-            print()
+            get_logger().info("="*70)
+            get_logger().info("GRADIENT THRESHOLD SWEEP")
+            get_logger().info("="*70)
+            get_logger().info(f"Testing {len(thresholds)} threshold values...")
+            get_logger().info(f"Target sparsity: {sparsity:.2%}")
+            get_logger().info(f"Using {len(cached_batches)} cached batches for consistent comparison")
+            get_logger().info("")
 
         for threshold in thresholds:
             if verbose:
-                print(f"\nTesting threshold: {threshold:.2%}")
-                print("-" * 50)
+                get_logger().debug(f"\nTesting threshold: {threshold:.2%}")
+                get_logger().debug("-" * 50)
 
             # Restore model to original state
             for name, param in self.model.named_parameters():
@@ -1004,10 +1005,10 @@ class GradProbe:
             results['metrics'].append(metric)
 
             if verbose:
-                print(f"  Threshold: {threshold:.2%}")
-                print(f"  Sparsity: {actual_sparsity:.2%}")
-                print(f"  Weights pruned: {num_pruned:,} / {total_params:,}")
-                print(f"  Metric: {metric:.2f}")
+                get_logger().debug(f"  Threshold: {threshold:.2%}")
+                get_logger().debug(f"  Sparsity: {actual_sparsity:.2%}")
+                get_logger().debug(f"  Weights pruned: {num_pruned:,} / {total_params:,}")
+                get_logger().debug(f"  Metric: {metric:.2f}")
 
         # Restore model to original state
         for name, param in self.model.named_parameters():
@@ -1015,17 +1016,17 @@ class GradProbe:
                 param.data.copy_(original_state_backup[name])
 
         if verbose:
-            print("\n" + "="*70)
-            print("SWEEP RESULTS SUMMARY")
-            print("="*70)
-            print(f"{'Threshold':<12} {'Sparsity':<12} {'Pruned':<15} {'Metric':<10}")
-            print("-" * 70)
+            get_logger().info("\n" + "="*70)
+            get_logger().info("SWEEP RESULTS SUMMARY")
+            get_logger().info("="*70)
+            get_logger().info(f"{'Threshold':<12} {'Sparsity':<12} {'Pruned':<15} {'Metric':<10}")
+            get_logger().info("-" * 70)
             for i in range(len(thresholds)):
-                print(f"{results['thresholds'][i]:<12.2%} "
+                get_logger().info(f"{results['thresholds'][i]:<12.2%} "
                       f"{results['sparsities'][i]:<12.2%} "
                       f"{results['weights_pruned'][i]:<15,} "
                       f"{results['metrics'][i]:<10.2f}")
-            print("="*70)
+            get_logger().info("="*70)
 
         return results
 
@@ -1172,13 +1173,13 @@ class GradProbe:
             Dictionary mapping parameter names to pruning masks
         """
         if verbose:
-            print("="*70)
-            print("LAYER-BY-LAYER PRUNING")
-            print("="*70)
-            print(f"Target sparsity per layer: {sparsity:.2%}")
-            print(f"Gradient threshold: {gradient_threshold:.2%}")
-            print(f"Layer order: {layer_order}")
-            print()
+            get_logger().info("="*70)
+            get_logger().info("LAYER-BY-LAYER PRUNING")
+            get_logger().info("="*70)
+            get_logger().info(f"Target sparsity per layer: {sparsity:.2%}")
+            get_logger().info(f"Gradient threshold: {gradient_threshold:.2%}")
+            get_logger().info(f"Layer order: {layer_order}")
+            get_logger().info("")
 
         # Get all weight layers
         layer_params = []
@@ -1202,10 +1203,10 @@ class GradProbe:
             raise ValueError(f"Unknown layer_order: {layer_order}. Must be 'reverse', 'size', or 'forward'")
 
         if verbose:
-            print(f"Pruning {len(layer_params)} layers in {order_desc}:")
+            get_logger().info(f"Pruning {len(layer_params)} layers in {order_desc}:")
             for i, (name, param) in enumerate(layer_params):
-                print(f"  {i+1}. {name} ({param.numel():,} weights)")
-            print()
+                get_logger().info(f"  {i+1}. {name} ({param.numel():,} weights)")
+            get_logger().info("")
 
         # Save original model state
         # In low_memory_mode, save to CPU to avoid doubling GPU memory usage
@@ -1240,8 +1241,8 @@ class GradProbe:
         # Prune each layer
         for layer_idx, (layer_name, layer_param) in enumerate(layer_params):
             if verbose:
-                print(f"Layer {layer_idx+1}/{len(layer_params)}: {layer_name}")
-                print("-" * 50)
+                get_logger().debug(f"Layer {layer_idx+1}/{len(layer_params)}: {layer_name}")
+                get_logger().debug("-" * 50)
 
             # Freeze all other layers (set requires_grad=False)
             original_requires_grad = {}
@@ -1253,7 +1254,7 @@ class GradProbe:
             # Recompute strategy masks for current model state (with previous layers pruned)
             # This is the key difference from the "optimized" version that cached upfront
             if verbose:
-                print(f"  Computing {self.strategy.get_name()} importance scores...")
+                get_logger().debug(f"  Computing {self.strategy.get_name()} importance scores...")
             full_strategy_masks = self.strategy.select_weights_to_prune(self.model, sparsity)
 
             # Extract just this layer's mask
@@ -1261,7 +1262,7 @@ class GradProbe:
                 # Shouldn't happen, but fallback to empty mask
                 all_masks[layer_name] = torch.zeros(layer_param.data.shape, dtype=torch.bool, device='cpu')
                 if verbose:
-                    print(f"  Warning: No mask for {layer_name}, skipping")
+                    get_logger().warning(f"  Warning: No mask for {layer_name}, skipping")
                 # Restore requires_grad
                 for name, param in self.model.named_parameters():
                     param.requires_grad = original_requires_grad[name]
@@ -1321,9 +1322,9 @@ class GradProbe:
             # Print stats for this layer
             if verbose:
                 layer_sparsity = layer_masks[layer_name].sum().item() / layer_masks[layer_name].numel()
-                print(f"  Pruned: {layer_masks[layer_name].sum().item()} / {layer_masks[layer_name].numel()} "
+                get_logger().debug(f"  Pruned: {layer_masks[layer_name].sum().item()} / {layer_masks[layer_name].numel()} "
                       f"({layer_sparsity:.2%})")
-                print()
+                get_logger().debug("")
 
         # Store accumulated caches for threshold tuning (only if not in low_memory_mode)
         if not self.low_memory_mode:
@@ -1347,7 +1348,7 @@ class GradProbe:
         self.pruning_mask = all_masks
 
         if verbose:
-            print("="*70)
+            get_logger().info("="*70)
             self._print_pruning_statistics(all_masks)
 
         return all_masks
@@ -1401,14 +1402,14 @@ class GradProbe:
         use_two_step = prev_step_data is not None
 
         if use_two_step and verbose:
-            print(f"    Using two-step tuning (re-pruning both step {prev_step_data['sparsity']:.0%} and {current_sparsity:.0%})")
+            get_logger().debug(f"    Using two-step tuning (re-pruning both step {prev_step_data['sparsity']:.0%} and {current_sparsity:.0%})")
 
         # Try both directions
         lower_threshold = base_threshold * 0.9
         higher_threshold = base_threshold * 1.1
 
         if verbose:
-            print(f"    Testing threshold {lower_threshold:.2f} and {higher_threshold:.2f}")
+            get_logger().debug(f"    Testing threshold {lower_threshold:.2f} and {higher_threshold:.2f}")
 
         # Test lower threshold
         if use_two_step:
@@ -1474,8 +1475,8 @@ class GradProbe:
         higher_drop = initial_accuracy - higher_result['accuracy']
 
         if verbose:
-            print(f"    Lower threshold ({lower_threshold:.2f}): sparsity={lower_result['sparsity']:.2%}, accuracy={lower_result['accuracy']:.2f}%, drop={lower_drop:.2f}%")
-            print(f"    Higher threshold ({higher_threshold:.2f}): sparsity={higher_result['sparsity']:.2%}, accuracy={higher_result['accuracy']:.2f}%, drop={higher_drop:.2f}%")
+            get_logger().debug(f"    Lower threshold ({lower_threshold:.2f}): sparsity={lower_result['sparsity']:.2%}, accuracy={lower_result['accuracy']:.2f}%, drop={lower_drop:.2f}%")
+            get_logger().debug(f"    Higher threshold ({higher_threshold:.2f}): sparsity={higher_result['sparsity']:.2%}, accuracy={higher_result['accuracy']:.2f}%, drop={higher_drop:.2f}%")
 
         # Check if either direction meets the requirement
         if lower_drop <= max_accuracy_drop:
@@ -1492,8 +1493,8 @@ class GradProbe:
         # (it might improve with further iterations)
         if best_result is None:
             if verbose:
-                print(f"    Neither direction meets accuracy requirement")
-                print(f"    Trying the better direction anyway...")
+                get_logger().debug(f"    Neither direction meets accuracy requirement")
+                get_logger().debug(f"    Trying the better direction anyway...")
 
             # Pick the direction with better (or equal) accuracy
             if lower_result['accuracy'] >= higher_result['accuracy']:
@@ -1501,20 +1502,20 @@ class GradProbe:
                 best_result['threshold'] = lower_threshold
                 direction_multiplier = 0.9
                 if verbose:
-                    print(f"    Chose lower threshold (better/equal accuracy)")
+                    get_logger().debug(f"    Chose lower threshold (better/equal accuracy)")
             else:
                 best_result = higher_result
                 best_result['threshold'] = higher_threshold
                 direction_multiplier = 1.1
                 if verbose:
-                    print(f"    Chose higher threshold (better accuracy)")
+                    get_logger().debug(f"    Chose higher threshold (better accuracy)")
 
         # Continue in the better direction
         if verbose:
             if direction_multiplier == 0.9:
-                print(f"    Direction: decreasing threshold (×0.9)")
+                get_logger().debug(f"    Direction: decreasing threshold (×0.9)")
             else:
-                print(f"    Direction: increasing threshold (×1.1)")
+                get_logger().debug(f"    Direction: increasing threshold (×1.1)")
 
         current_threshold = best_result['threshold']
         previous_accuracy = best_result['accuracy']
@@ -1558,7 +1559,7 @@ class GradProbe:
             next_drop = initial_accuracy - next_result['accuracy']
 
             if verbose:
-                print(f"    Trying threshold {next_threshold:.2f}: sparsity={next_result['sparsity']:.2%}, accuracy={next_result['accuracy']:.2f}%, drop={next_drop:.2f}%")
+                get_logger().debug(f"    Trying threshold {next_threshold:.2f}: sparsity={next_result['sparsity']:.2%}, accuracy={next_result['accuracy']:.2f}%, drop={next_drop:.2f}%")
 
             # Allow up to 1% degradation relative to current accuracy to handle numerical noise
             tolerance = abs(previous_accuracy) * 0.01
@@ -1577,11 +1578,11 @@ class GradProbe:
                         best_valid_result = next_result
                         best_valid_result['threshold'] = next_threshold
                         if verbose:
-                            print(f"      ✓ New best valid result (sparsity={next_result['sparsity']:.2%})")
+                            get_logger().debug(f"      ✓ New best valid result (sparsity={next_result['sparsity']:.2%})")
             else:
                 # Accuracy degraded beyond tolerance, stop
                 if verbose:
-                    print(f"    Stopping tuning (accuracy degraded by {-accuracy_change:.2f}% > tolerance {tolerance:.2f}%)")
+                    get_logger().debug(f"    Stopping tuning (accuracy degraded by {-accuracy_change:.2f}% > tolerance {tolerance:.2f}%)")
                 break
 
         # Return the best result that meets requirements (or None if we never found one)
@@ -1642,7 +1643,7 @@ class GradProbe:
                 param.data[mask] = 0
 
         if verbose:
-            print(f"        [Two-step] Re-pruning step {prev_step_data['sparsity']:.0%} with threshold {threshold:.2f}...")
+            get_logger().debug(f"        [Two-step] Re-pruning step {prev_step_data['sparsity']:.0%} with threshold {threshold:.2f}...")
 
         # Re-run pruning for previous step with new threshold
         prev_sparsity = prev_step_data['sparsity']
@@ -1681,7 +1682,7 @@ class GradProbe:
                 param.data[mask] = 0
 
         if verbose:
-            print(f"        [Two-step] Re-pruning step {current_sparsity:.0%} with threshold {threshold:.2f}...")
+            get_logger().debug(f"        [Two-step] Re-pruning step {current_sparsity:.0%} with threshold {threshold:.2f}...")
 
         # Re-run pruning for current step with new threshold
         if layerwise:
@@ -1844,29 +1845,29 @@ class GradProbe:
         # Warn about incompatible options in low_memory_mode
         if self.low_memory_mode:
             if tune_threshold_on_fail and layerwise:
-                print("\n⚠ WARNING: low_memory_mode + layerwise + tune_threshold_on_fail")
-                print("   Threshold tuning will be DISABLED for layerwise pruning in low_memory_mode")
-                print("   (requires cached gradients which are not stored to save memory)")
+                get_logger().warning("\n⚠ WARNING: low_memory_mode + layerwise + tune_threshold_on_fail")
+                get_logger().warning("   Threshold tuning will be DISABLED for layerwise pruning in low_memory_mode")
+                get_logger().warning("   (requires cached gradients which are not stored to save memory)")
                 tune_threshold_on_fail = False
             if experimental_tune_both_steps:
-                print("\n⚠ WARNING: low_memory_mode + experimental_tune_both_steps")
-                print("   Two-step tuning will be DISABLED in low_memory_mode")
-                print("   (requires re-pruning which is very expensive)")
+                get_logger().warning("\n⚠ WARNING: low_memory_mode + experimental_tune_both_steps")
+                get_logger().warning("   Two-step tuning will be DISABLED in low_memory_mode")
+                get_logger().warning("   (requires re-pruning which is very expensive)")
                 experimental_tune_both_steps = False
 
         if verbose:
-            print("="*70)
-            print("ITERATIVE PRUNING")
-            print("="*70)
-            print(f"Initial sparsity: {initial_sparsity:.2%}")
-            print(f"Sparsity step: {sparsity_step:.2%}")
-            print(f"Max accuracy drop: {max_accuracy_drop:.2f}%")
-            print(f"Layerwise: {layerwise}")
+            get_logger().info("="*70)
+            get_logger().info("ITERATIVE PRUNING")
+            get_logger().info("="*70)
+            get_logger().info(f"Initial sparsity: {initial_sparsity:.2%}")
+            get_logger().info(f"Sparsity step: {sparsity_step:.2%}")
+            get_logger().info(f"Max accuracy drop: {max_accuracy_drop:.2f}%")
+            get_logger().info(f"Layerwise: {layerwise}")
             if layerwise:
-                print(f"Layer order: {layer_order}")
+                get_logger().info(f"Layer order: {layer_order}")
             if self.low_memory_mode:
-                print(f"Low memory mode: ENABLED")
-            print()
+                get_logger().info(f"Low memory mode: ENABLED")
+            get_logger().info("")
 
         # Save original model state
         # In low_memory_mode, save to CPU to avoid doubling GPU memory usage
@@ -1882,7 +1883,7 @@ class GradProbe:
         # Measure initial accuracy
         initial_accuracy = eval_fn(self.model)
         if verbose:
-            print(f"Initial accuracy: {initial_accuracy:.2f}%\n")
+            get_logger().info(f"Initial accuracy: {initial_accuracy:.2f}%\n")
 
         results = {
             'sparsity_history': [],
@@ -1915,8 +1916,8 @@ class GradProbe:
 
         while True:
             if verbose:
-                print(f"Trying sparsity: {current_sparsity:.2%}")
-                print("-" * 50)
+                get_logger().info(f"Trying sparsity: {current_sparsity:.2%}")
+                get_logger().info("-" * 50)
 
             # Don't restore - continue from previous iteration's pruned state
             # (first iteration starts from original)
@@ -1968,10 +1969,10 @@ class GradProbe:
             results['accuracy_history'].append(accuracy)
 
             if verbose:
-                print(f"  Target sparsity: {current_sparsity:.2%}")
-                print(f"  Gradient-filtered sparsity: {actual_sparsity:.2%}")
-                print(f"  Gradient-filtered accuracy: {accuracy:.2f}%")
-                print(f"  Accuracy drop: {accuracy_drop:.2f}%")
+                get_logger().info(f"  Target sparsity: {current_sparsity:.2%}")
+                get_logger().info(f"  Gradient-filtered sparsity: {actual_sparsity:.2%}")
+                get_logger().info(f"  Gradient-filtered accuracy: {accuracy:.2f}%")
+                get_logger().info(f"  Accuracy drop: {accuracy_drop:.2f}%")
 
             # Compare with baseline (strategy-only without gradient filtering) if requested
             if compare_baseline:
@@ -2009,9 +2010,9 @@ class GradProbe:
                 strategy_name = self.strategy.get_name()
 
                 if verbose:
-                    print(f"  {strategy_name}-only sparsity: {strategy_sparsity:.2%}")
-                    print(f"  {strategy_name}-only accuracy: {strategy_accuracy:.2f}%")
-                    print(f"  Accuracy gain from filtering: {accuracy - strategy_accuracy:+.2f}%")
+                    get_logger().info(f"  {strategy_name}-only sparsity: {strategy_sparsity:.2%}")
+                    get_logger().info(f"  {strategy_name}-only accuracy: {strategy_accuracy:.2f}%")
+                    get_logger().info(f"  Accuracy gain from filtering: {accuracy - strategy_accuracy:+.2f}%")
 
                 # Restore gradient-filtered state
                 for name, param in self.model.named_parameters():
@@ -2030,16 +2031,16 @@ class GradProbe:
             if sparsity_increase <= 0:
                 consecutive_no_increase += 1
                 if verbose:
-                    print(f"  ⚠ Sparsity did not increase (Δ={sparsity_increase:+.2%})")
-                    print(f"  Consecutive no-increase count: {consecutive_no_increase}")
+                    get_logger().warning(f"  ⚠ Sparsity did not increase (Δ={sparsity_increase:+.2%})")
+                    get_logger().warning(f"  Consecutive no-increase count: {consecutive_no_increase}")
             else:
                 consecutive_no_increase = 0
 
             # Check if we should stop due to sparsity plateau
             if consecutive_no_increase >= 2:
                 if verbose:
-                    print(f"  ✗ Sparsity plateau detected (no increase for {consecutive_no_increase} iterations)")
-                    print(f"  Stopping - gradient filtering is restoring too many weights")
+                    get_logger().warning(f"  ✗ Sparsity plateau detected (no increase for {consecutive_no_increase} iterations)")
+                    get_logger().warning(f"  Stopping - gradient filtering is restoring too many weights")
                 # Revert to previous best state
                 for name, param in self.model.named_parameters():
                     if name in original_state_backup:
@@ -2052,7 +2053,7 @@ class GradProbe:
             # Check if we should stop due to accuracy drop
             if accuracy_drop > max_accuracy_drop:
                 if verbose:
-                    print(f"  ✗ Accuracy dropped by {accuracy_drop:.2f}% > {max_accuracy_drop:.2f}%")
+                    get_logger().debug(f"  ✗ Accuracy dropped by {accuracy_drop:.2f}% > {max_accuracy_drop:.2f}%")
 
                 # Try to fine-tune gradient threshold to squeeze out more sparsity
                 tuned_result = None
@@ -2063,7 +2064,7 @@ class GradProbe:
                         hasattr(self, '_cached_tentative_masks')):
                         if verbose:
                             mode_str = "two-step" if (experimental_tune_both_steps and prev_cached_original_gradients is not None) else "single-step"
-                            print(f"  ⚙ Attempting threshold tuning ({mode_str})...")
+                            get_logger().debug(f"  ⚙ Attempting threshold tuning ({mode_str})...")
 
                         # Pass previous step's data if experimental mode is enabled
                         prev_data = None
@@ -2097,13 +2098,13 @@ class GradProbe:
                             layer_order=layer_order
                         )
                     elif verbose:
-                        print(f"  ⚠ Cannot tune threshold - cached gradients not available")
+                        get_logger().warning(f"  ⚠ Cannot tune threshold - cached gradients not available")
 
                 if tuned_result is not None:
                     # Found a better threshold that meets requirements
                     if verbose:
-                        print(f"  ✓ Tuning successful! Using threshold {tuned_result['threshold']:.2f}")
-                        print(f"  ✓ Achieved {tuned_result['sparsity']:.2%} sparsity at {tuned_result['accuracy']:.2f}% accuracy")
+                        get_logger().info(f"  ✓ Tuning successful! Using threshold {tuned_result['threshold']:.2f}")
+                        get_logger().info(f"  ✓ Achieved {tuned_result['sparsity']:.2%} sparsity at {tuned_result['accuracy']:.2f}% accuracy")
 
                     best_masks = tuned_result['masks']
                     best_sparsity = tuned_result['sparsity']
@@ -2120,8 +2121,8 @@ class GradProbe:
                 else:
                     if verbose:
                         if tune_threshold_on_fail and gradient_threshold > 0:
-                            print(f"  ✗ Threshold tuning unsuccessful")
-                        print(f"  Stopping - reverting to previous iteration")
+                            get_logger().debug(f"  ✗ Threshold tuning unsuccessful")
+                        get_logger().debug(f"  Stopping - reverting to previous iteration")
                     # Revert to previous best state
                     for name, param in self.model.named_parameters():
                         if name in original_state_backup:
@@ -2133,7 +2134,7 @@ class GradProbe:
                 break
             else:
                 if verbose:
-                    print(f"  ✓ Accuracy drop acceptable")
+                    get_logger().debug(f"  ✓ Accuracy drop acceptable")
 
                 # Save current iteration's cached data as "previous" for next iteration
                 # IMPORTANT: Save BEFORE updating best_masks, so we have masks from before this step
@@ -2163,7 +2164,7 @@ class GradProbe:
             previous_sparsity = actual_sparsity
 
             if verbose:
-                print()
+                get_logger().info("")
 
             # Force garbage collection and free GPU memory between iterations
             gc.collect()
@@ -2176,7 +2177,7 @@ class GradProbe:
             # Stop if we've reached 100% sparsity
             if current_sparsity > 1.0:
                 if verbose:
-                    print("Reached maximum sparsity (1.0)")
+                    get_logger().info("Reached maximum sparsity (1.0)")
                 break
 
         # Model should already have best masks applied (we didn't restore)
@@ -2193,14 +2194,14 @@ class GradProbe:
                     param.data.copy_(original_state_backup[name])
 
         if verbose:
-            print("\n" + "="*70)
-            print("ITERATIVE PRUNING RESULTS")
-            print("="*70)
-            print(f"Initial accuracy: {initial_accuracy:.2f}%")
-            print(f"Final accuracy: {best_accuracy:.2f}%")
-            print(f"Accuracy drop: {initial_accuracy - best_accuracy:.2f}%")
-            print(f"Final sparsity: {best_sparsity:.2%}")
-            print("="*70)
+            get_logger().info("\n" + "="*70)
+            get_logger().info("ITERATIVE PRUNING RESULTS")
+            get_logger().info("="*70)
+            get_logger().info(f"Initial accuracy: {initial_accuracy:.2f}%")
+            get_logger().info(f"Final accuracy: {best_accuracy:.2f}%")
+            get_logger().info(f"Accuracy drop: {initial_accuracy - best_accuracy:.2f}%")
+            get_logger().info(f"Final sparsity: {best_sparsity:.2%}")
+            get_logger().info("="*70)
             if best_masks is not None:
                 self._print_pruning_statistics(best_masks)
 
