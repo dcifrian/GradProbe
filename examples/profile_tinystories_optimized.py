@@ -17,46 +17,50 @@ import math
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from gradprobe import GradProbe, MagnitudePruning
+from gradprobe.logger import Logger, LogLevel
 from profile_memory import MemoryProfiler, analyze_model_memory, estimate_activation_memory
+
+# Initialize logger
+logger = Logger(program_name='profile_tinystories_optimized', level=LogLevel.INFO)
 
 # Try to import transformers
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 except ImportError:
-    print("transformers library not found. Please install it:")
-    print("pip install transformers")
+    logger.error("transformers library not found. Please install it:")
+    logger.error("pip install transformers")
     sys.exit(1)
 
 # Initialize memory profiler
 profiler = MemoryProfiler()
 
-print("="*70)
-print("MEMORY PROFILING: GradProbe with OPTIMIZATIONS ENABLED")
-print("="*70)
-print("Optimizations:")
-print("  ✓ FP16 gradients and saved state (2x memory reduction)")
-print("  ✓ Layer-by-layer gradient streaming (eliminates dual storage)")
-print("  ✓ Gradient checkpointing (reduces activation memory)")
-print("="*70)
-print()
+logger.info("="*70)
+logger.info("MEMORY PROFILING: GradProbe with OPTIMIZATIONS ENABLED")
+logger.info("="*70)
+logger.info("Optimizations:")
+logger.info("  ✓ FP16 gradients and saved state (2x memory reduction)")
+logger.info("  ✓ Layer-by-layer gradient streaming (eliminates dual storage)")
+logger.info("  ✓ Gradient checkpointing (reduces activation memory)")
+logger.info("="*70)
+logger.info()
 
 profiler.snapshot("00_initial")
 
-print("Loading TinyStories-33M model...")
+logger.info("Loading TinyStories-33M model...")
 model_name = "roneneldan/TinyStories-33M"
 try:
     model = AutoModelForCausalLM.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 except Exception as e:
-    print(f"Error loading model: {e}")
-    print("Trying to download...")
+    logger.error(f"Error loading model: {e}")
+    logger.info("Trying to download...")
     model = AutoModelForCausalLM.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 profiler.snapshot("01_model_loaded")
 
-print(f"Model loaded successfully")
-print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+logger.info(f"Model loaded successfully")
+logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
 # Analyze model parameter memory
 num_params, param_bytes = analyze_model_memory(model)
@@ -71,9 +75,9 @@ There was a happy bunny who lived in the woods. The bunny liked to hop and play 
 A little boy named Max loved to build things. He had many blocks of different colors. One day, Max decided to build a tall tower. He stacked the blocks very carefully, one on top of another. The tower grew taller and taller until it was as high as Max's head. Max was very proud of his tower. He showed it to his mom and dad, and they clapped their hands. That night, Max dreamed about building even bigger towers."""
 
 # Tokenize
-print("\nPreparing data...")
+logger.info("\nPreparing data...")
 tokens = tokenizer.encode(test_text, return_tensors='pt')
-print(f"Total tokens: {tokens.shape[1]}")
+logger.info(f"Total tokens: {tokens.shape[1]}")
 
 # Create dataset with sliding windows
 seq_length = 128
@@ -88,7 +92,7 @@ for i in range(0, tokens.shape[1] - seq_length - 1, stride):
         input_sequences.append(input_seq)
         target_sequences.append(target_seq)
 
-print(f"Created {len(input_sequences)} sequences of length {seq_length}")
+logger.info(f"Created {len(input_sequences)} sequences of length {seq_length}")
 
 # Create dataloaders
 all_inputs = torch.cat(input_sequences, dim=0)
@@ -114,12 +118,12 @@ def loss_fn(outputs, targets):
     )
     return loss
 
-print("\n" + "="*70)
-print("STARTING GRADPROBE PRUNING WITH OPTIMIZATIONS")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("STARTING GRADPROBE PRUNING WITH OPTIMIZATIONS")
+logger.info("="*70)
 
 # Initialize pruner with ALL optimizations enabled
-print("\nInitializing GradProbe with optimizations...")
+logger.info("\nInitializing GradProbe with optimizations...")
 pruner = GradProbe(
     model,
     MagnitudePruning(),
@@ -135,16 +139,16 @@ num_batches = 5
 reduction_factor = 0.1
 gradient_threshold = 2.0
 
-print(f"\nPruning configuration:")
-print(f"  Target sparsity: {sparsity:.2%}")
-print(f"  Num batches: {num_batches}")
-print(f"  Reduction factor: {reduction_factor}")
-print(f"  Gradient threshold: {gradient_threshold}")
+logger.info(f"\nPruning configuration:")
+logger.info(f"  Target sparsity: {sparsity:.2%}")
+logger.info(f"  Num batches: {num_batches}")
+logger.info(f"  Reduction factor: {reduction_factor}")
+logger.info(f"  Gradient threshold: {gradient_threshold}")
 
 profiler.snapshot("04_before_pruning")
 
 # Run pruning with optimizations
-print("\nRunning pruning...")
+logger.info("\nRunning pruning...")
 final_masks = pruner.prune(
     dataloader=dataloader_pruning,
     loss_fn=loss_fn,
@@ -162,20 +166,20 @@ total_params = sum(p.numel() for p in model.parameters())
 zero_params = sum((p.data == 0).sum().item() for p in model.parameters())
 final_sparsity = zero_params / total_params
 
-print(f"\nFinal sparsity: {final_sparsity:.2%}")
-print(f"Pruned {zero_params:,} out of {total_params:,} parameters")
+logger.info(f"\nFinal sparsity: {final_sparsity:.2%}")
+logger.info(f"Pruned {zero_params:,} out of {total_params:,} parameters")
 
 # Print profiling results
-print("\n" + "="*70)
-print("MEMORY PROFILING RESULTS - WITH OPTIMIZATIONS")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("MEMORY PROFILING RESULTS - WITH OPTIMIZATIONS")
+logger.info("="*70)
 
 profiler.print_summary()
 
 # Calculate expected memory savings
-print("\n" + "="*70)
-print("MEMORY COMPARISON")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("MEMORY COMPARISON")
+logger.info("="*70)
 
 # Original implementation
 original_weights = 2 * param_bytes  # model + saved_state
@@ -190,24 +194,24 @@ opt_gradients = (param_bytes / len([p for p in model.parameters() if len(p.shape
 opt_masks = param_bytes / 4  # boolean masks
 opt_total = opt_weights + opt_saved_state + opt_gradients + opt_masks
 
-print(f"\nORIGINAL IMPLEMENTATION (without optimizations):")
-print(f"  Model weights: {param_bytes / 1024 / 1024:.2f} MB")
-print(f"  Saved state (fp32): {param_bytes / 1024 / 1024:.2f} MB")
-print(f"  Original gradients (fp32, all layers): {param_bytes / 1024 / 1024:.2f} MB")
-print(f"  Modified gradients (fp32, all layers): {param_bytes / 1024 / 1024:.2f} MB")
-print(f"  Masks: {(param_bytes / 4) / 1024 / 1024:.2f} MB")
-print(f"  TOTAL (before activations): {original_total / 1024 / 1024:.2f} MB")
+logger.info(f"\nORIGINAL IMPLEMENTATION (without optimizations):")
+logger.memory(f"  Model weights: {param_bytes / 1024 / 1024:.2f} MB")
+logger.memory(f"  Saved state (fp32): {param_bytes / 1024 / 1024:.2f} MB")
+logger.memory(f"  Original gradients (fp32, all layers): {param_bytes / 1024 / 1024:.2f} MB")
+logger.memory(f"  Modified gradients (fp32, all layers): {param_bytes / 1024 / 1024:.2f} MB")
+logger.memory(f"  Masks: {(param_bytes / 4) / 1024 / 1024:.2f} MB")
+logger.memory(f"  TOTAL (before activations): {original_total / 1024 / 1024:.2f} MB")
 
-print(f"\nOPTIMIZED IMPLEMENTATION (with all optimizations):")
-print(f"  Model weights: {param_bytes / 1024 / 1024:.2f} MB")
-print(f"  Saved state (fp16): {opt_saved_state / 1024 / 1024:.2f} MB")
-print(f"  Gradients (fp16, ONE layer at a time): {opt_gradients / 1024 / 1024:.2f} MB")
-print(f"  Masks: {(param_bytes / 4) / 1024 / 1024:.2f} MB")
-print(f"  TOTAL (before activations): {opt_total / 1024 / 1024:.2f} MB")
+logger.info(f"\nOPTIMIZED IMPLEMENTATION (with all optimizations):")
+logger.memory(f"  Model weights: {param_bytes / 1024 / 1024:.2f} MB")
+logger.memory(f"  Saved state (fp16): {opt_saved_state / 1024 / 1024:.2f} MB")
+logger.memory(f"  Gradients (fp16, ONE layer at a time): {opt_gradients / 1024 / 1024:.2f} MB")
+logger.memory(f"  Masks: {(param_bytes / 4) / 1024 / 1024:.2f} MB")
+logger.memory(f"  TOTAL (before activations): {opt_total / 1024 / 1024:.2f} MB")
 
-print(f"\nMEMORY SAVINGS:")
-print(f"  Reduction: {original_total / 1024 / 1024:.2f} MB → {opt_total / 1024 / 1024:.2f} MB")
-print(f"  Savings: {(original_total - opt_total) / 1024 / 1024:.2f} MB ({(1 - opt_total/original_total)*100:.1f}%)")
+logger.info(f"\nMEMORY SAVINGS:")
+logger.memory(f"  Reduction: {original_total / 1024 / 1024:.2f} MB → {opt_total / 1024 / 1024:.2f} MB")
+logger.memory(f"  Savings: {(original_total - opt_total) / 1024 / 1024:.2f} MB ({(1 - opt_total/original_total)*100:.1f}%)")
 
 # Scaling projection
 mistral_params = 7_000_000_000
@@ -215,11 +219,11 @@ mistral_param_bytes = mistral_params * 4  # fp32
 mistral_original_total = (mistral_param_bytes * 4.25) / 1024 / 1024 / 1024  # 4.25x before activations
 mistral_opt_total = (mistral_param_bytes * 1.65) / 1024 / 1024 / 1024  # ~1.65x with optimizations
 
-print(f"\nSCALING TO MISTRAL-7B:")
-print(f"  Original implementation: ~{mistral_original_total:.1f} GB (before activations)")
-print(f"  Optimized implementation: ~{mistral_opt_total:.1f} GB (before activations)")
-print(f"  Savings: ~{mistral_original_total - mistral_opt_total:.1f} GB ({(1 - mistral_opt_total/mistral_original_total)*100:.1f}%)")
+logger.info(f"\nSCALING TO MISTRAL-7B:")
+logger.memory(f"  Original implementation: ~{mistral_original_total:.1f} GB (before activations)")
+logger.memory(f"  Optimized implementation: ~{mistral_opt_total:.1f} GB (before activations)")
+logger.memory(f"  Savings: ~{mistral_original_total - mistral_opt_total:.1f} GB ({(1 - mistral_opt_total/mistral_original_total)*100:.1f}%)")
 
-print("\n" + "="*70)
-print("PROFILING COMPLETE")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("PROFILING COMPLETE")
+logger.info("="*70)

@@ -12,28 +12,32 @@ import math
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from gradprobe import GradProbe, MagnitudePruning, WANDAPruning
+from gradprobe.logger import Logger, LogLevel
+
+# Initialize logger
+logger = Logger(program_name='test_tinystories', level=LogLevel.INFO)
 
 # Try to import transformers
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 except ImportError:
-    print("transformers library not found. Please install it:")
-    print("pip install transformers")
+    logger.error("transformers library not found. Please install it:")
+    logger.error("pip install transformers")
     sys.exit(1)
 
-print("Loading TinyStories-33M model...")
+logger.info("Loading TinyStories-33M model...")
 model_name = "roneneldan/TinyStories-33M"
 try:
     model = AutoModelForCausalLM.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 except Exception as e:
-    print(f"Error loading model: {e}")
-    print("Trying to download...")
+    logger.error(f"Error loading model: {e}")
+    logger.info("Trying to download...")
     model = AutoModelForCausalLM.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-print(f"Model loaded successfully")
-print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+logger.info(f"Model loaded successfully")
+logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
 # Prepare test data - use multiple stories to get enough tokens
 test_text = """Once upon a time, there was a little girl named Lily. She loved to play outside in the sunshine. One day, she saw a big, red ball in the park. She ran to get it and kicked it very hard. The ball flew high into the sky and landed in a tree. Lily was sad because she couldn't reach it. Then, a kind boy came and helped her get the ball down. Lily was happy again and they played together all day.
@@ -45,9 +49,9 @@ There was a happy bunny who lived in the woods. The bunny liked to hop and play 
 A little boy named Max loved to build things. He had many blocks of different colors. One day, Max decided to build a tall tower. He stacked the blocks very carefully, one on top of another. The tower grew taller and taller until it was as high as Max's head. Max was very proud of his tower. He showed it to his mom and dad, and they clapped their hands. That night, Max dreamed about building even bigger towers."""
 
 # Tokenize
-print("\nPreparing data...")
+logger.info("\nPreparing data...")
 tokens = tokenizer.encode(test_text, return_tensors='pt')
-print(f"Total tokens: {tokens.shape[1]}")
+logger.info(f"Total tokens: {tokens.shape[1]}")
 
 # Create dataset with sliding windows
 # For language modeling, we need input and target sequences
@@ -63,7 +67,7 @@ for i in range(0, tokens.shape[1] - seq_length - 1, stride):  # -1 for target sh
         input_sequences.append(input_seq)
         target_sequences.append(target_seq)
 
-print(f"Created {len(input_sequences)} sequences of length {seq_length}")
+logger.info(f"Created {len(input_sequences)} sequences of length {seq_length}")
 
 # Create dataloaders
 all_inputs = torch.cat(input_sequences, dim=0)
@@ -121,7 +125,7 @@ def loss_fn(outputs, targets):
     )
     return loss
 
-print(f"\nInitial perplexity: {eval_perplexity(model):.2f}")
+logger.info(f"\nInitial perplexity: {eval_perplexity(model):.2f}")
 
 # Save model state
 import copy
@@ -155,9 +159,9 @@ def eval_fn_adjusted(m):
     # = perplexity increase (which is what we want!)
     return -perplexity
 
-print("\n" + "="*70)
-print("TEST 1: Regular Iterative Pruning")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("TEST 1: Regular Iterative Pruning")
+logger.info("="*70)
 model.load_state_dict(saved_state)
 pruner = GradProbe(model, MagnitudePruning(),use_fp16=True,use_gradient_checkpointing=True)
 
@@ -175,17 +179,17 @@ results = pruner.iterative_prune(
     compare_baseline=True
 )
 
-print("\n" + "="*70)
-print("FINAL RESULTS - MAGNITUDE")
-print("="*70)
-print(f"Final perplexity: {eval_perplexity(model):.2f}")
-print(f"Final sparsity: {results['final_sparsity']:.2%}")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("FINAL RESULTS - MAGNITUDE")
+logger.info("="*70)
+logger.info(f"Final perplexity: {eval_perplexity(model):.2f}")
+logger.info(f"Final sparsity: {results['final_sparsity']:.2%}")
+logger.info("="*70)
 
 # Test 2: WANDA pruning
-print("\n" + "="*70)
-print("TEST 2: WANDA Pruning")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("TEST 2: WANDA Pruning")
+logger.info("="*70)
 model.load_state_dict(saved_state)
 
 # WANDA needs the dataloader to collect activations
@@ -208,30 +212,30 @@ results_wanda = pruner_wanda.iterative_prune(
     layer_order="size"  # NEW: Prune largest layers first
 )
 
-print("\n" + "="*70)
-print("FINAL RESULTS - WANDA")
-print("="*70)
-print(f"Final perplexity: {eval_perplexity(model):.2f}")
-print(f"Final sparsity: {results_wanda['final_sparsity']:.2%}")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("FINAL RESULTS - WANDA")
+logger.info("="*70)
+logger.info(f"Final perplexity: {eval_perplexity(model):.2f}")
+logger.info(f"Final sparsity: {results_wanda['final_sparsity']:.2%}")
+logger.info("="*70)
 
-print("\n" + "="*70)
-print("COMPARISON: MAGNITUDE vs WANDA")
-print("="*70)
-print(f"Magnitude pruning:")
-print(f"  Initial perplexity: {-results['initial_accuracy']:.2f}")
-print(f"  Final perplexity: {-results['final_accuracy']:.2f}")
-print(f"  Sparsity: {results['final_sparsity']:.2%}")
-print(f"\nWANDA pruning:")
-print(f"  Initial perplexity: {-results_wanda['initial_accuracy']:.2f}")
-print(f"  Final perplexity: {-results_wanda['final_accuracy']:.2f}")
-print(f"  Sparsity: {results_wanda['final_sparsity']:.2%}")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("COMPARISON: MAGNITUDE vs WANDA")
+logger.info("="*70)
+logger.info(f"Magnitude pruning:")
+logger.info(f"  Initial perplexity: {-results['initial_accuracy']:.2f}")
+logger.info(f"  Final perplexity: {-results['final_accuracy']:.2f}")
+logger.info(f"  Sparsity: {results['final_sparsity']:.2%}")
+logger.info(f"\nWANDA pruning:")
+logger.info(f"  Initial perplexity: {-results_wanda['initial_accuracy']:.2f}")
+logger.info(f"  Final perplexity: {-results_wanda['final_accuracy']:.2f}")
+logger.info(f"  Sparsity: {results_wanda['final_sparsity']:.2%}")
+logger.info("="*70)
 
 # Generate text samples to compare quality
-print("\n" + "="*70)
-print("TEXT GENERATION COMPARISON")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("TEXT GENERATION COMPARISON")
+logger.info("="*70)
 
 # Reload original model
 model.load_state_dict(saved_state)
@@ -240,10 +244,10 @@ device = next(model.parameters()).device
 prompt_text = "Once upon a time, there was a little girl who"
 prompt_tokens = tokenizer.encode(prompt_text, return_tensors='pt').to(device)
 
-print(f"\nPrompt: \"{prompt_text}\"")
-print("\n" + "-"*70)
-print("ORIGINAL MODEL:")
-print("-"*70)
+logger.info(f"\nPrompt: \"{prompt_text}\"")
+logger.info("\n" + "-"*70)
+logger.info("ORIGINAL MODEL:")
+logger.info("-"*70)
 model.eval()
 with torch.no_grad():
     output_tokens = model.generate(
@@ -255,11 +259,11 @@ with torch.no_grad():
         pad_token_id=tokenizer.eos_token_id
     )
 generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
-print(generated_text)
+logger.info(generated_text)
 
-print("\n" + "-"*70)
-print(f"PRUNED MODEL (WANDA, {results_wanda['final_sparsity']:.1%} sparse):")
-print("-"*70)
+logger.info("\n" + "-"*70)
+logger.info(f"PRUNED MODEL (WANDA, {results_wanda['final_sparsity']:.1%} sparse):")
+logger.info("-"*70)
 
 # Apply WANDA pruning results
 for name, param in model.named_parameters():
@@ -277,17 +281,17 @@ with torch.no_grad():
         pad_token_id=tokenizer.eos_token_id
     )
 generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
-print(generated_text)
-print("="*70)
+logger.info(generated_text)
+logger.info("="*70)
 
 # Save the pruned model
-print("\n" + "="*70)
-print("SAVING PRUNED MODEL")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("SAVING PRUNED MODEL")
+logger.info("="*70)
 output_dir = "pruned_models/tinystories_wanda_pruned"
 os.makedirs(output_dir, exist_ok=True)
 model.save_pretrained(output_dir)
 tokenizer.save_pretrained(output_dir)
-print(f"Pruned model saved to: {output_dir}")
-print(f"Sparsity: {results_wanda['final_sparsity']:.1%}")
-print("="*70)
+logger.info(f"Pruned model saved to: {output_dir}")
+logger.info(f"Sparsity: {results_wanda['final_sparsity']:.1%}")
+logger.info("="*70)

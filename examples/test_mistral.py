@@ -16,12 +16,16 @@ import copy
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from gradprobe import GradProbe, WANDAPruning
+from gradprobe.logger import Logger, LogLevel
+
+# Initialize logger
+logger = Logger(program_name='test_mistral', level=LogLevel.INFO)
 
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 except ImportError:
-    print("transformers library not found. Please install it:")
-    print("pip install transformers")
+    logger.error("transformers library not found. Please install it:")
+    logger.error("pip install transformers")
     sys.exit(1)
 
 # Configuration
@@ -54,27 +58,27 @@ The development of writing systems was a crucial milestone in human history. Ear
 
 Biodiversity refers to the variety of life on Earth, encompassing millions of species of plants, animals, fungi, and microorganisms. Each species plays a unique role in its ecosystem, contributing to the complex web of life that sustains our planet. Conservation efforts aim to protect this diversity, recognizing that the loss of species can have far-reaching consequences."""
 
-print("="*70)
-print("GRADPROBE - MISTRAL-7B-v0.3 PRUNING TEST")
-print("="*70)
-print(f"Model: {MODEL_NAME}")
-print(f"Device: {DEVICE}")
-print(f"Sequence length: {SEQ_LENGTH}")
-print("="*70)
+logger.info("="*70)
+logger.info("GRADPROBE - MISTRAL-7B-v0.3 PRUNING TEST")
+logger.info("="*70)
+logger.info(f"Model: {MODEL_NAME}")
+logger.info(f"Device: {DEVICE}")
+logger.info(f"Sequence length: {SEQ_LENGTH}")
+logger.info("="*70)
 
 # Memory monitoring helper
 def print_gpu_memory(label):
     if torch.cuda.is_available():
         allocated = torch.cuda.memory_allocated() / 1024**3
         reserved = torch.cuda.memory_reserved() / 1024**3
-        print(f"[{label}] GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+        logger.memory(f"[{label}] GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
         torch.cuda.empty_cache()  # Clear cache after reporting
         after_clear = torch.cuda.memory_allocated() / 1024**3
-        print(f"[{label}] After cache clear: {after_clear:.2f}GB")
+        logger.memory(f"[{label}] After cache clear: {after_clear:.2f}GB")
 
 # Load model
-print(f"\nLoading Mistral-7B-v0.3...")
-print("This may take a few minutes...")
+logger.info(f"\nLoading Mistral-7B-v0.3...")
+logger.info("This may take a few minutes...")
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
@@ -91,17 +95,17 @@ if tokenizer.pad_token is None:
 # This trades compute for memory by not storing intermediate activations
 if hasattr(model, 'gradient_checkpointing_enable'):
     model.gradient_checkpointing_enable()
-    print("Gradient checkpointing enabled")
+    logger.info("Gradient checkpointing enabled")
 
-print(f"Model loaded successfully")
-print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-print(f"Model dtype: {next(model.parameters()).dtype}")
+logger.info(f"Model loaded successfully")
+logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+logger.info(f"Model dtype: {next(model.parameters()).dtype}")
 print_gpu_memory("After model load")
 
 # Prepare calibration data
-print("\nPreparing calibration data...")
+logger.info("\nPreparing calibration data...")
 tokens = tokenizer.encode(CALIBRATION_TEXT, return_tensors='pt')
-print(f"Total tokens: {tokens.shape[1]}")
+logger.info(f"Total tokens: {tokens.shape[1]}")
 print_gpu_memory("After tokenization")
 
 # Create dataset with sliding windows (limit to NUM_SEQUENCES to save memory)
@@ -118,7 +122,7 @@ for i in range(0, tokens.shape[1] - SEQ_LENGTH - 1, stride):
         if len(input_sequences) >= NUM_SEQUENCES:
             break
 
-print(f"Created {len(input_sequences)} sequences of length {SEQ_LENGTH}")
+logger.info(f"Created {len(input_sequences)} sequences of length {SEQ_LENGTH}")
 
 # Create dataloaders
 all_inputs = torch.cat(input_sequences, dim=0)
@@ -181,47 +185,47 @@ def eval_fn_adjusted(m):
 
 
 # Measure initial perplexity
-print(f"\nMeasuring initial perplexity...")
+logger.info(f"\nMeasuring initial perplexity...")
 initial_perplexity = eval_perplexity(model)
-print(f"Initial perplexity: {initial_perplexity:.2f}")
+logger.info(f"Initial perplexity: {initial_perplexity:.2f}")
 print_gpu_memory("After initial perplexity")
 
 # Save model state (do this on CPU to avoid GPU memory issues)
-print("\nSaving model state...")
+logger.info("\nSaving model state...")
 saved_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 print_gpu_memory("After saving model state")
 
 # Create WANDA strategy
-print(f"\nInitializing WANDA pruning strategy...")
-print(f"Collecting activations from {NUM_BATCHES_WANDA} batches...")
+logger.info(f"\nInitializing WANDA pruning strategy...")
+logger.info(f"Collecting activations from {NUM_BATCHES_WANDA} batches...")
 print_gpu_memory("Before WANDA activation collection")
 wanda_strategy = WANDAPruning(dataloader=dataloader_pruning, num_batches=NUM_BATCHES_WANDA)
 print_gpu_memory("After WANDA strategy creation")
 
 # Create pruner with low_memory_mode
-print(f"\nInitializing GradProbe pruner...")
+logger.info(f"\nInitializing GradProbe pruner...")
 pruner = GradProbe(model, wanda_strategy, device=DEVICE, low_memory_mode=LOW_MEMORY_MODE, use_fp16=True,use_gradient_checkpointing=True)
 print_gpu_memory("After pruner creation")
 
 # Run pruning
-print("\n" + "="*70)
-print("PRUNING MISTRAL-7B WITH WANDA + GRADIENT FILTERING")
-print("="*70)
-print("Configuration:")
-print(f"  Initial sparsity: 10%")
-print(f"  Sparsity step: 10%")
-print(f"  Max perplexity increase: 5.0")
-print(f"  Gradient threshold: 0.5 (conservative for large model)")
-print(f"  Layerwise: True")
-print(f"  Layer order: size (largest first)")
-print(f"  Low memory mode: {LOW_MEMORY_MODE}")
+logger.info("\n" + "="*70)
+logger.info("PRUNING MISTRAL-7B WITH WANDA + GRADIENT FILTERING")
+logger.info("="*70)
+logger.info("Configuration:")
+logger.info(f"  Initial sparsity: 10%")
+logger.info(f"  Sparsity step: 10%")
+logger.info(f"  Max perplexity increase: 5.0")
+logger.info(f"  Gradient threshold: 0.5 (conservative for large model)")
+logger.info(f"  Layerwise: True")
+logger.info(f"  Layer order: size (largest first)")
+logger.info(f"  Low memory mode: {LOW_MEMORY_MODE}")
 if LOW_MEMORY_MODE:
-    print(f"  Threshold tuning: Disabled (low memory mode)")
-    print(f"  Experimental two-step tuning: Disabled (low memory mode)")
+    logger.info(f"  Threshold tuning: Disabled (low memory mode)")
+    logger.info(f"  Experimental two-step tuning: Disabled (low memory mode)")
 else:
-    print(f"  Threshold tuning: Enabled")
-    print(f"  Experimental two-step tuning: Enabled")
-print("="*70)
+    logger.info(f"  Threshold tuning: Enabled")
+    logger.info(f"  Experimental two-step tuning: Enabled")
+logger.info("="*70)
 
 results = pruner.iterative_prune(
     dataloader=dataloader_pruning,
@@ -242,22 +246,22 @@ results = pruner.iterative_prune(
 
 # Print final results
 final_perplexity = eval_perplexity(model)
-print("\n" + "="*70)
-print("FINAL RESULTS - MISTRAL-7B PRUNING")
-print("="*70)
-print(f"Initial perplexity: {initial_perplexity:.2f}")
-print(f"Final perplexity: {final_perplexity:.2f}")
-print(f"Perplexity increase: {final_perplexity - initial_perplexity:.2f}")
-print(f"Final sparsity: {results['final_sparsity']:.2%}")
+logger.info("\n" + "="*70)
+logger.info("FINAL RESULTS - MISTRAL-7B PRUNING")
+logger.info("="*70)
+logger.info(f"Initial perplexity: {initial_perplexity:.2f}")
+logger.info(f"Final perplexity: {final_perplexity:.2f}")
+logger.info(f"Perplexity increase: {final_perplexity - initial_perplexity:.2f}")
+logger.info(f"Final sparsity: {results['final_sparsity']:.2%}")
 total_params = sum(p.numel() for p in model.parameters())
 pruned_params = int(results['final_sparsity'] * total_params)
-print(f"Pruned parameters: {pruned_params:,} / {total_params:,}")
-print("="*70)
+logger.info(f"Pruned parameters: {pruned_params:,} / {total_params:,}")
+logger.info("="*70)
 
 # Generate text comparison
-print("\n" + "="*70)
-print("TEXT GENERATION COMPARISON")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("TEXT GENERATION COMPARISON")
+logger.info("="*70)
 
 model.load_state_dict(saved_state)
 device = next(model.parameters()).device
@@ -265,10 +269,10 @@ device = next(model.parameters()).device
 prompt_text = "The future of artificial intelligence is"
 prompt_tokens = tokenizer.encode(prompt_text, return_tensors='pt').to(device)
 
-print(f"\nPrompt: \"{prompt_text}\"")
-print("\n" + "-"*70)
-print("ORIGINAL MODEL:")
-print("-"*70)
+logger.info(f"\nPrompt: \"{prompt_text}\"")
+logger.info("\n" + "-"*70)
+logger.info("ORIGINAL MODEL:")
+logger.info("-"*70)
 model.eval()
 with torch.no_grad():
     output_tokens = model.generate(
@@ -280,11 +284,11 @@ with torch.no_grad():
         pad_token_id=tokenizer.eos_token_id
     )
 generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
-print(generated_text)
+logger.info(generated_text)
 
-print("\n" + "-"*70)
-print(f"PRUNED MODEL ({results['final_sparsity']:.1%} sparse):")
-print("-"*70)
+logger.info("\n" + "-"*70)
+logger.info(f"PRUNED MODEL ({results['final_sparsity']:.1%} sparse):")
+logger.info("-"*70)
 
 # Apply pruning
 for name, param in model.named_parameters():
@@ -302,21 +306,21 @@ with torch.no_grad():
         pad_token_id=tokenizer.eos_token_id
     )
 generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
-print(generated_text)
-print("="*70)
+logger.info(generated_text)
+logger.info("="*70)
 
 # Save the pruned model
-print("\n" + "="*70)
-print("SAVING PRUNED MODEL")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("SAVING PRUNED MODEL")
+logger.info("="*70)
 output_dir = "pruned_models/mistral_wanda_pruned"
 os.makedirs(output_dir, exist_ok=True)
 model.save_pretrained(output_dir)
 tokenizer.save_pretrained(output_dir)
-print(f"Pruned model saved to: {output_dir}")
-print(f"Sparsity: {results['final_sparsity']:.1%}")
-print("="*70)
+logger.info(f"Pruned model saved to: {output_dir}")
+logger.info(f"Sparsity: {results['final_sparsity']:.1%}")
+logger.info("="*70)
 
-print("\n" + "="*70)
-print("MISTRAL-7B PRUNING TEST COMPLETED")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("MISTRAL-7B PRUNING TEST COMPLETED")
+logger.info("="*70)

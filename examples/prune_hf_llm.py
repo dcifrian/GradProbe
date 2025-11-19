@@ -18,12 +18,16 @@ from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from gradprobe import GradProbe, MagnitudePruning, WANDAPruning
+from gradprobe.logger import Logger, LogLevel
+
+# Initialize logger
+logger = Logger(program_name='prune_hf_llm', level=LogLevel.INFO)
 
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 except ImportError:
-    print("transformers library not found. Please install it:")
-    print("pip install transformers")
+    logger.error("transformers library not found. Please install it:")
+    logger.error("pip install transformers")
     sys.exit(1)
 
 
@@ -42,9 +46,9 @@ A curious cat named Whiskers loved to explore. One day, Whiskers found a mysteri
 
 def prepare_calibration_data(text, tokenizer, seq_length=128, stride=64, device='cpu'):
     """Prepare calibration data from text."""
-    print("\nPreparing calibration data...")
+    logger.info("\nPreparing calibration data...")
     tokens = tokenizer.encode(text, return_tensors='pt')
-    print(f"Total tokens: {tokens.shape[1]}")
+    logger.info(f"Total tokens: {tokens.shape[1]}")
 
     # Create dataset with sliding windows
     input_sequences = []
@@ -57,7 +61,7 @@ def prepare_calibration_data(text, tokenizer, seq_length=128, stride=64, device=
             input_sequences.append(input_seq)
             target_sequences.append(target_seq)
 
-    print(f"Created {len(input_sequences)} sequences of length {seq_length}")
+    logger.info(f"Created {len(input_sequences)} sequences of length {seq_length}")
 
     # Create dataloaders
     all_inputs = torch.cat(input_sequences, dim=0)
@@ -126,15 +130,15 @@ def generate_text_comparison(model, tokenizer, prompt, original_state, pruned_ma
     device = next(model.parameters()).device
     prompt_tokens = tokenizer.encode(prompt, return_tensors='pt').to(device)
 
-    print("\n" + "="*70)
-    print("TEXT GENERATION COMPARISON")
-    print("="*70)
-    print(f"\nPrompt: \"{prompt}\"")
+    logger.info("\n" + "="*70)
+    logger.info("TEXT GENERATION COMPARISON")
+    logger.info("="*70)
+    logger.info(f"\nPrompt: \"{prompt}\"")
 
     # Original model
-    print("\n" + "-"*70)
-    print("ORIGINAL MODEL:")
-    print("-"*70)
+    logger.info("\n" + "-"*70)
+    logger.info("ORIGINAL MODEL:")
+    logger.info("-"*70)
     model.load_state_dict(original_state)
     model.eval()
     with torch.no_grad():
@@ -147,13 +151,13 @@ def generate_text_comparison(model, tokenizer, prompt, original_state, pruned_ma
             pad_token_id=tokenizer.eos_token_id
         )
     generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
-    print(generated_text)
+    logger.info(generated_text)
 
     # Pruned model
-    print("\n" + "-"*70)
+    logger.info("\n" + "-"*70)
     sparsity = sum(m.sum().item() for m in pruned_masks.values()) / sum(m.numel() for m in pruned_masks.values())
-    print(f"PRUNED MODEL ({sparsity:.1%} sparse):")
-    print("-"*70)
+    logger.info(f"PRUNED MODEL ({sparsity:.1%} sparse):")
+    logger.info("-"*70)
     for name, param in model.named_parameters():
         if name in pruned_masks:
             param.data[pruned_masks[name]] = 0
@@ -169,8 +173,8 @@ def generate_text_comparison(model, tokenizer, prompt, original_state, pruned_ma
             pad_token_id=tokenizer.eos_token_id
         )
     generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
-    print(generated_text)
-    print("="*70)
+    logger.info(generated_text)
+    logger.info("="*70)
 
 
 def save_pruned_model(model, pruned_masks, output_path, tokenizer=None):
@@ -202,8 +206,8 @@ def save_pruned_model(model, pruned_masks, output_path, tokenizer=None):
     with open(output_path / 'pruning_info.json', 'w') as f:
         json.dump(info, f, indent=2)
 
-    print(f"\nPruned model saved to: {output_path}")
-    print(f"Sparsity: {sparsity:.2%} ({pruned_params:,} / {total_params:,} parameters)")
+    logger.info(f"\nPruned model saved to: {output_path}")
+    logger.info(f"Sparsity: {sparsity:.2%} ({pruned_params:,} / {total_params:,} parameters)")
 
 
 def main():
@@ -269,8 +273,8 @@ def main():
     args = parser.parse_args()
 
     # Load model
-    print(f"Loading model: {args.model}")
-    print(f"Device: {args.device}")
+    logger.info(f"Loading model: {args.model}")
+    logger.info(f"Device: {args.device}")
 
     # Determine if we should use memory-efficient loading
     use_efficient_loading = args.low_memory_mode or args.device == 'auto'
@@ -285,7 +289,7 @@ def main():
         # Enable gradient checkpointing for large models
         if hasattr(model, 'gradient_checkpointing_enable'):
             model.gradient_checkpointing_enable()
-            print("Gradient checkpointing enabled")
+            logger.info("Gradient checkpointing enabled")
     else:
         model = AutoModelForCausalLM.from_pretrained(args.model)
 
@@ -295,16 +299,16 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print(f"Model loaded successfully")
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"Model dtype: {next(model.parameters()).dtype}")
+    logger.info(f"Model loaded successfully")
+    logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    logger.info(f"Model dtype: {next(model.parameters()).dtype}")
 
     # Prepare calibration data
     if args.calibration_text:
         with open(args.calibration_text, 'r') as f:
             calibration_text = f.read()
     else:
-        print("Using default calibration text")
+        logger.info("Using default calibration text")
         calibration_text = DEFAULT_CALIBRATION_TEXT
 
     dataloader, eval_data = prepare_calibration_data(
@@ -315,7 +319,7 @@ def main():
 
     # Measure initial perplexity
     initial_perplexity = eval_perplexity(model, eval_data)
-    print(f"\nInitial perplexity: {initial_perplexity:.2f}")
+    logger.info(f"\nInitial perplexity: {initial_perplexity:.2f}")
 
     # Save original state (on CPU to avoid GPU memory issues with large models)
     import copy
@@ -329,19 +333,19 @@ def main():
 
     # Create pruning strategy
     if args.strategy == 'wanda':
-        print("\nUsing WANDA pruning strategy")
+        logger.info("\nUsing WANDA pruning strategy")
         strategy = WANDAPruning(dataloader=dataloader, num_batches=min(50, len(dataloader)))
     else:
-        print("\nUsing Magnitude pruning strategy")
+        logger.info("\nUsing Magnitude pruning strategy")
         strategy = MagnitudePruning()
 
     # Create pruner
     pruner = GradProbe(model, strategy, device=args.device, low_memory_mode=args.low_memory_mode)
 
     # Run pruning
-    print("\n" + "="*70)
-    print(f"PRUNING WITH {args.strategy.upper()}")
-    print("="*70)
+    logger.info("\n" + "="*70)
+    logger.info(f"PRUNING WITH {args.strategy.upper()}")
+    logger.info("="*70)
 
     results = pruner.iterative_prune(
         dataloader=dataloader,
@@ -362,15 +366,15 @@ def main():
 
     # Print final results
     final_perplexity = eval_perplexity(model, eval_data)
-    print("\n" + "="*70)
-    print("FINAL RESULTS")
-    print("="*70)
-    print(f"Strategy: {args.strategy.upper()}")
-    print(f"Initial perplexity: {initial_perplexity:.2f}")
-    print(f"Final perplexity: {final_perplexity:.2f}")
-    print(f"Perplexity increase: {final_perplexity - initial_perplexity:.2f}")
-    print(f"Final sparsity: {results['final_sparsity']:.2%}")
-    print("="*70)
+    logger.info("\n" + "="*70)
+    logger.info("FINAL RESULTS")
+    logger.info("="*70)
+    logger.info(f"Strategy: {args.strategy.upper()}")
+    logger.info(f"Initial perplexity: {initial_perplexity:.2f}")
+    logger.info(f"Final perplexity: {final_perplexity:.2f}")
+    logger.info(f"Perplexity increase: {final_perplexity - initial_perplexity:.2f}")
+    logger.info(f"Final sparsity: {results['final_sparsity']:.2%}")
+    logger.info("="*70)
 
     # Generate text comparison
     if args.generate_text:

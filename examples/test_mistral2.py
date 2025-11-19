@@ -17,12 +17,16 @@ import math
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from gradprobe import GradProbe, WANDAPruning
+from gradprobe.logger import Logger, LogLevel
+
+# Initialize logger
+logger = Logger(program_name='test_mistral2', level=LogLevel.INFO)
 
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 except ImportError:
-    print("transformers library not found. Please install it:")
-    print("pip install transformers")
+    logger.error("transformers library not found. Please install it:")
+    logger.error("pip install transformers")
     sys.exit(1)
 
 # Configuration - match profile_mistral_wanda.py
@@ -37,18 +41,18 @@ INITIAL_SPARSITY = 0.1
 SPARSITY_STEP = 0.1
 MAX_ACCURACY_DROP = 1.0  # 1% perplexity increase allowed
 
-print("="*70)
-print("GRADPROBE - MISTRAL-7B ITERATIVE WANDA PRUNING TEST")
-print("="*70)
-print(f"Model: {MODEL_NAME}")
-print(f"Device: {DEVICE}")
-print(f"Sequence length: {SEQ_LENGTH}")
-print(f"Num sequences: {NUM_SEQUENCES}")
-print(f"Num batches: {NUM_BATCHES_GRADIENT}")
-print(f"Initial sparsity: {INITIAL_SPARSITY:.0%}")
-print(f"Sparsity step: {SPARSITY_STEP:.0%}")
-print(f"Max accuracy drop: {MAX_ACCURACY_DROP:.1f}%")
-print("="*70)
+logger.info("="*70)
+logger.info("GRADPROBE - MISTRAL-7B ITERATIVE WANDA PRUNING TEST")
+logger.info("="*70)
+logger.info(f"Model: {MODEL_NAME}")
+logger.info(f"Device: {DEVICE}")
+logger.info(f"Sequence length: {SEQ_LENGTH}")
+logger.info(f"Num sequences: {NUM_SEQUENCES}")
+logger.info(f"Num batches: {NUM_BATCHES_GRADIENT}")
+logger.info(f"Initial sparsity: {INITIAL_SPARSITY:.0%}")
+logger.info(f"Sparsity step: {SPARSITY_STEP:.0%}")
+logger.info(f"Max accuracy drop: {MAX_ACCURACY_DROP:.1f}%")
+logger.info("="*70)
 
 # Memory monitoring helper
 def print_memory(label):
@@ -60,13 +64,13 @@ def print_memory(label):
     if torch.cuda.is_available():
         vram_mb = torch.cuda.memory_allocated() / 1024 / 1024
         vram_reserved_mb = torch.cuda.memory_reserved() / 1024 / 1024
-        print(f"[{label}] RAM: {ram_mb:.0f}MB, VMS: {vms_mb:.0f}MB, "
+        logger.memory(f"[{label}] RAM: {ram_mb:.0f}MB, VMS: {vms_mb:.0f}MB, "
               f"VRAM: {vram_mb:.0f}MB, VRAM Reserved: {vram_reserved_mb:.0f}MB")
     else:
-        print(f"[{label}] RAM: {ram_mb:.0f}MB, VMS: {vms_mb:.0f}MB")
+        logger.memory(f"[{label}] RAM: {ram_mb:.0f}MB, VMS: {vms_mb:.0f}MB")
 
 # Load model
-print(f"\nLoading Mistral-7B...")
+logger.info(f"\nLoading Mistral-7B...")
 print_memory("Before model load")
 
 model = AutoModelForCausalLM.from_pretrained(
@@ -80,8 +84,8 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
-print(f"Model loaded")
-print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+logger.info(f"Model loaded")
+logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 print_memory("After model load")
 
 # Prepare calibration data - same as profiler
@@ -93,11 +97,11 @@ Throughout history, explorers have ventured into the unknown, driven by curiosit
 
 Mathematics is often called the language of the universe. From the elegant simplicity of Euclidean geometry to the abstract complexities of modern algebra and topology, mathematics provides tools for understanding patterns, structures, and relationships in both the natural and abstract worlds."""
 
-print(f"\nPreparing calibration data...")
+logger.info(f"\nPreparing calibration data...")
 print_memory("Before data prep")
 
 tokens = tokenizer.encode(CALIBRATION_TEXT, return_tensors='pt')
-print(f"Total tokens: {tokens.shape[1]}")
+logger.info(f"Total tokens: {tokens.shape[1]}")
 
 # Create sequences - same logic as profiler
 input_sequences = []
@@ -114,8 +118,8 @@ for i in range(0, min(tokens.shape[1] - SEQ_LENGTH - 1, NUM_SEQUENCES * stride),
             break
 
 if len(input_sequences) == 0:
-    print(f"\nWarning: Text too short for {NUM_SEQUENCES} sequences of length {SEQ_LENGTH}")
-    print(f"Creating single sequence from available text...")
+    logger.info(f"\nWarning: Text too short for {NUM_SEQUENCES} sequences of length {SEQ_LENGTH}")
+    logger.info(f"Creating single sequence from available text...")
     # Pad if necessary
     if tokens.shape[1] < SEQ_LENGTH + 1:
         padding_needed = SEQ_LENGTH + 1 - tokens.shape[1]
@@ -123,7 +127,7 @@ if len(input_sequences) == 0:
     input_sequences = [tokens[:, :SEQ_LENGTH]]
     target_sequences = [tokens[:, 1:SEQ_LENGTH+1]]
 
-print(f"Created {len(input_sequences)} sequences")
+logger.info(f"Created {len(input_sequences)} sequences")
 
 all_inputs = torch.cat(input_sequences, dim=0)
 all_targets = torch.cat(target_sequences, dim=0)
@@ -182,7 +186,7 @@ def eval_fn_adjusted(m):
     return -perplexity
 
 # Initialize pruner with all optimizations (same as profiler)
-print(f"\nInitializing GradProbe with WANDA strategy...")
+logger.info(f"\nInitializing GradProbe with WANDA strategy...")
 print_memory("Before pruner init")
 
 pruner = GradProbe(
@@ -194,21 +198,21 @@ pruner = GradProbe(
     use_gradient_checkpointing=True
 )
 
-print(f"Pruner initialized")
+logger.info(f"Pruner initialized")
 print_memory("After pruner init")
 
 # Measure baseline perplexity
-print("\n" + "="*70)
-print("Measuring baseline perplexity...")
+logger.info("\n" + "="*70)
+logger.info("Measuring baseline perplexity...")
 baseline_perplexity = eval_perplexity(model)
-print(f"Baseline perplexity: {baseline_perplexity:.2f}")
-print("="*70)
+logger.info(f"Baseline perplexity: {baseline_perplexity:.2f}")
+logger.info("="*70)
 
 # Run iterative pruning
-print(f"\nStarting iterative pruning...")
-print(f"Initial sparsity: {INITIAL_SPARSITY:.0%}, step: {SPARSITY_STEP:.0%}")
-print(f"Max allowed perplexity increase: {MAX_ACCURACY_DROP:.1f}%")
-print()
+logger.info(f"\nStarting iterative pruning...")
+logger.info(f"Initial sparsity: {INITIAL_SPARSITY:.0%}, step: {SPARSITY_STEP:.0%}")
+logger.info(f"Max allowed perplexity increase: {MAX_ACCURACY_DROP:.1f}%")
+logger.info()
 
 start_time = time.time()
 print_memory("Before pruning")
@@ -232,44 +236,44 @@ results = pruner.iterative_prune(
 elapsed_time = time.time() - start_time
 print_memory("After pruning")
 
-print(f"\nIterative pruning completed in {elapsed_time:.2f}s ({elapsed_time/60:.2f} minutes)")
+logger.info(f"\nIterative pruning completed in {elapsed_time:.2f}s ({elapsed_time/60:.2f} minutes)")
 
 # Print results
-print("\n" + "="*70)
-print("PRUNING RESULTS")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("PRUNING RESULTS")
+logger.info("="*70)
 
 # Note: results contain negative perplexity, so negate back for display
-print(f"\nBaseline perplexity: {-results['initial_accuracy']:.2f}")
-print(f"Final perplexity: {-results['final_accuracy']:.2f}")
-print(f"Perplexity change: {-results['final_accuracy'] - (-results['initial_accuracy']):.2f}")
+logger.info(f"\nBaseline perplexity: {-results['initial_accuracy']:.2f}")
+logger.info(f"Final perplexity: {-results['final_accuracy']:.2f}")
+logger.info(f"Perplexity change: {-results['final_accuracy'] - (-results['initial_accuracy']):.2f}")
 
 total_params = sum(p.numel() for p in model.parameters())
 zero_params = sum((p.data == 0).sum().item() for p in model.parameters())
 final_sparsity = zero_params / total_params
 
-print(f"\nFinal sparsity: {final_sparsity:.2%}")
-print(f"Pruned {zero_params:,} out of {total_params:,} parameters")
+logger.info(f"\nFinal sparsity: {final_sparsity:.2%}")
+logger.info(f"Pruned {zero_params:,} out of {total_params:,} parameters")
 
 if 'sparsity_history' in results:
-    print("\nSparsity progression:")
+    logger.info("\nSparsity progression:")
     for i, (sparsity, acc) in enumerate(zip(results['sparsity_history'], results['accuracy_history'])):
         # acc is negative perplexity, so negate it back for display
-        print(f"  Step {i+1}: {sparsity:.1%} sparsity -> perplexity {-acc:.2f}")
+        logger.info(f"  Step {i+1}: {sparsity:.1%} sparsity -> perplexity {-acc:.2f}")
 
 # Save the pruned model
-print("\n" + "="*70)
-print("SAVING PRUNED MODEL")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("SAVING PRUNED MODEL")
+logger.info("="*70)
 output_dir = "pruned_models/mistral_magnitude_pruned"
 os.makedirs(output_dir, exist_ok=True)
 model.save_pretrained(output_dir)
 tokenizer.save_pretrained(output_dir)
-print(f"Pruned model saved to: {output_dir}")
-print(f"Sparsity: {final_sparsity:.1%}")
-print("="*70)
+logger.info(f"Pruned model saved to: {output_dir}")
+logger.info(f"Sparsity: {final_sparsity:.1%}")
+logger.info("="*70)
 
-print("\n" + "="*70)
-print("TEST COMPLETE")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("TEST COMPLETE")
+logger.info("="*70)
 print_memory("Final")
