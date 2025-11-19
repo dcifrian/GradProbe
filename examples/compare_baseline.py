@@ -12,7 +12,10 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from gradprobe import GradProbe, MagnitudePruning, SimpleMLP
+from gradprobe import GradProbe, MagnitudePruning, SimpleMLP, Logger, LogLevel
+
+# Initialize logger for this example
+logger = Logger(program_name='compare_baseline', level=LogLevel.INFO)
 
 
 # Generate synthetic data
@@ -29,7 +32,7 @@ model = SimpleMLP(input_dim=100, hidden_dims=[128, 64], output_dim=10, dropout=0
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = nn.CrossEntropyLoss()
 
-print("Training model...")
+logger.info("Training model...")
 for epoch in range(100):
     for inputs, targets in dataloader:
         optimizer.zero_grad()
@@ -62,16 +65,16 @@ def eval_fn(m):
             correct += pred.eq(targets).sum().item()
     return 100.0 * correct / total
 
-print(f"Trained accuracy: {eval_fn(model):.2f}%\n")
+logger.info(f"Trained accuracy: {eval_fn(model):.2f}%\n")
 
 # Save model state
 import copy
 saved_state = copy.deepcopy(model.state_dict())
 
 # Test pruning with baseline comparison
-print("="*70)
-print("PRUNING WITH BASELINE COMPARISON")
-print("="*70)
+logger.info("="*70)
+logger.info("PRUNING WITH BASELINE COMPARISON")
+logger.info("="*70)
 model.load_state_dict(saved_state)
 pruner = GradProbe(model, MagnitudePruning())
 
