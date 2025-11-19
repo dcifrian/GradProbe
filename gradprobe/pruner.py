@@ -1402,7 +1402,7 @@ class GradProbe:
         use_two_step = prev_step_data is not None
 
         if use_two_step and verbose:
-            get_logger().debug(f"    Using two-step tuning (re-pruning both step {prev_step_data['sparsity']:.0%} and {current_sparsity:.0%})")
+            get_logger().info(f"    Using two-step tuning (re-pruning both step {prev_step_data['sparsity']:.0%} and {current_sparsity:.0%})")
 
         # Try both directions
         lower_threshold = base_threshold * 0.9
@@ -1475,8 +1475,8 @@ class GradProbe:
         higher_drop = initial_accuracy - higher_result['accuracy']
 
         if verbose:
-            get_logger().debug(f"    Lower threshold ({lower_threshold:.2f}): sparsity={lower_result['sparsity']:.2%}, accuracy={lower_result['accuracy']:.2f}%, drop={lower_drop:.2f}%")
-            get_logger().debug(f"    Higher threshold ({higher_threshold:.2f}): sparsity={higher_result['sparsity']:.2%}, accuracy={higher_result['accuracy']:.2f}%, drop={higher_drop:.2f}%")
+            get_logger().info(f"    Lower threshold ({lower_threshold:.2f}): sparsity={lower_result['sparsity']:.2%}, accuracy={lower_result['accuracy']:.2f}%, drop={lower_drop:.2f}%")
+            get_logger().info(f"    Higher threshold ({higher_threshold:.2f}): sparsity={higher_result['sparsity']:.2%}, accuracy={higher_result['accuracy']:.2f}%, drop={higher_drop:.2f}%")
 
         # Check if either direction meets the requirement
         if lower_drop <= max_accuracy_drop:
@@ -1493,8 +1493,8 @@ class GradProbe:
         # (it might improve with further iterations)
         if best_result is None:
             if verbose:
-                get_logger().debug(f"    Neither direction meets accuracy requirement")
-                get_logger().debug(f"    Trying the better direction anyway...")
+                get_logger().info(f"    Neither direction meets accuracy requirement")
+                get_logger().info(f"    Trying the better direction anyway...")
 
             # Pick the direction with better (or equal) accuracy
             if lower_result['accuracy'] >= higher_result['accuracy']:
@@ -1513,9 +1513,9 @@ class GradProbe:
         # Continue in the better direction
         if verbose:
             if direction_multiplier == 0.9:
-                get_logger().debug(f"    Direction: decreasing threshold (×0.9)")
+                get_logger().info(f"    Direction: decreasing threshold (×0.9)")
             else:
-                get_logger().debug(f"    Direction: increasing threshold (×1.1)")
+                get_logger().info(f"    Direction: increasing threshold (×1.1)")
 
         current_threshold = best_result['threshold']
         previous_accuracy = best_result['accuracy']
@@ -1559,7 +1559,7 @@ class GradProbe:
             next_drop = initial_accuracy - next_result['accuracy']
 
             if verbose:
-                get_logger().debug(f"    Trying threshold {next_threshold:.2f}: sparsity={next_result['sparsity']:.2%}, accuracy={next_result['accuracy']:.2f}%, drop={next_drop:.2f}%")
+                get_logger().info(f"    Trying threshold {next_threshold:.2f}: sparsity={next_result['sparsity']:.2%}, accuracy={next_result['accuracy']:.2f}%, drop={next_drop:.2f}%")
 
             # Allow up to 1% degradation relative to current accuracy to handle numerical noise
             tolerance = abs(previous_accuracy) * 0.01
@@ -1578,11 +1578,11 @@ class GradProbe:
                         best_valid_result = next_result
                         best_valid_result['threshold'] = next_threshold
                         if verbose:
-                            get_logger().debug(f"      ✓ New best valid result (sparsity={next_result['sparsity']:.2%})")
+                            get_logger().info(f"      ✓ New best valid result (sparsity={next_result['sparsity']:.2%})")
             else:
                 # Accuracy degraded beyond tolerance, stop
                 if verbose:
-                    get_logger().debug(f"    Stopping tuning (accuracy degraded by {-accuracy_change:.2f}% > tolerance {tolerance:.2f}%)")
+                    get_logger().info(f"    Stopping tuning (accuracy degraded by {-accuracy_change:.2f}% > tolerance {tolerance:.2f}%)")
                 break
 
         # Return the best result that meets requirements (or None if we never found one)
@@ -2039,8 +2039,8 @@ class GradProbe:
             # Check if we should stop due to sparsity plateau
             if consecutive_no_increase >= 2:
                 if verbose:
-                    get_logger().warning(f"  ✗ Sparsity plateau detected (no increase for {consecutive_no_increase} iterations)")
-                    get_logger().warning(f"  Stopping - gradient filtering is restoring too many weights")
+                    get_logger().info(f"  ✗ Sparsity plateau detected (no increase for {consecutive_no_increase} iterations)")
+                    get_logger().info(f"  Stopping - gradient filtering is restoring too many weights")
                 # Revert to previous best state
                 for name, param in self.model.named_parameters():
                     if name in original_state_backup:
@@ -2053,7 +2053,7 @@ class GradProbe:
             # Check if we should stop due to accuracy drop
             if accuracy_drop > max_accuracy_drop:
                 if verbose:
-                    get_logger().debug(f"  ✗ Accuracy dropped by {accuracy_drop:.2f}% > {max_accuracy_drop:.2f}%")
+                    get_logger().info(f"  ✗ Accuracy dropped by {accuracy_drop:.2f}% > {max_accuracy_drop:.2f}%")
 
                 # Try to fine-tune gradient threshold to squeeze out more sparsity
                 tuned_result = None
@@ -2064,7 +2064,7 @@ class GradProbe:
                         hasattr(self, '_cached_tentative_masks')):
                         if verbose:
                             mode_str = "two-step" if (experimental_tune_both_steps and prev_cached_original_gradients is not None) else "single-step"
-                            get_logger().debug(f"  ⚙ Attempting threshold tuning ({mode_str})...")
+                            get_logger().info(f"  ⚙ Attempting threshold tuning ({mode_str})...")
 
                         # Pass previous step's data if experimental mode is enabled
                         prev_data = None
@@ -2121,8 +2121,8 @@ class GradProbe:
                 else:
                     if verbose:
                         if tune_threshold_on_fail and gradient_threshold > 0:
-                            get_logger().debug(f"  ✗ Threshold tuning unsuccessful")
-                        get_logger().debug(f"  Stopping - reverting to previous iteration")
+                            get_logger().info(f"  ✗ Threshold tuning unsuccessful")
+                        get_logger().info(f"  Stopping - reverting to previous iteration")
                     # Revert to previous best state
                     for name, param in self.model.named_parameters():
                         if name in original_state_backup:
@@ -2134,7 +2134,7 @@ class GradProbe:
                 break
             else:
                 if verbose:
-                    get_logger().debug(f"  ✓ Accuracy drop acceptable")
+                    get_logger().info(f"  ✓ Accuracy drop acceptable")
 
                 # Save current iteration's cached data as "previous" for next iteration
                 # IMPORTANT: Save BEFORE updating best_masks, so we have masks from before this step
