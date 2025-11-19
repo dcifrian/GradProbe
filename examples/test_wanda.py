@@ -10,8 +10,10 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from gradprobe import GradProbe, WANDAPruning, SimpleMLP
+from gradprobe import GradProbe, WANDAPruning, SimpleMLP, Logger, LogLevel
 
+# Initialize logger
+logger = Logger(program_name='test_wanda', level=LogLevel.INFO)
 
 # Generate synthetic data
 torch.manual_seed(42)
@@ -28,7 +30,7 @@ model = SimpleMLP(input_dim=100, hidden_dims=[128, 64], output_dim=10, dropout=0
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = nn.CrossEntropyLoss()
 
-print("Training model...")
+logger.info("Training model...")
 for epoch in range(100):
     for inputs, targets in dataloader:
         optimizer.zero_grad()
@@ -61,16 +63,16 @@ def eval_fn(m):
             correct += pred.eq(targets).sum().item()
     return 100.0 * correct / total
 
-print(f"Trained accuracy: {eval_fn(model):.2f}%\n")
+logger.info(f"Trained accuracy: {eval_fn(model):.2f}%\n")
 
 # Save model state
 import copy
 saved_state = copy.deepcopy(model.state_dict())
 
 # Test WANDA pruning with iterative approach
-print("="*70)
-print("TEST: WANDA Iterative Pruning")
-print("="*70)
+logger.info("="*70)
+logger.info("TEST: WANDA Iterative Pruning")
+logger.info("="*70)
 model.load_state_dict(saved_state)
 
 # WANDA needs the dataloader to collect activations
@@ -91,13 +93,13 @@ results = pruner.iterative_prune(
     compare_baseline=True
 )
 
-print("\n\n" + "="*70)
-print("COMPARISON SUMMARY")
-print("="*70)
-print(f"WANDA pruning:")
-print(f"  Final sparsity: {results['final_sparsity']:.2%}")
-print(f"  Final accuracy: {results['final_accuracy']:.2f}%")
-print("="*70)
-print("\nWANDA combines weight magnitude with activation norms to identify")
-print("unimportant weights. It should perform better than pure magnitude pruning")
-print("by considering how much each weight is actually used during inference.")
+logger.info("\n\n" + "="*70)
+logger.info("COMPARISON SUMMARY")
+logger.info("="*70)
+logger.info(f"WANDA pruning:")
+logger.info(f"  Final sparsity: {results['final_sparsity']:.2%}")
+logger.info(f"  Final accuracy: {results['final_accuracy']:.2f}%")
+logger.info("="*70)
+logger.info("\nWANDA combines weight magnitude with activation norms to identify")
+logger.info("unimportant weights. It should perform better than pure magnitude pruning")
+logger.info("by considering how much each weight is actually used during inference.")
