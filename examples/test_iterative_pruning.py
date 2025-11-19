@@ -10,8 +10,10 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from gradprobe import GradProbe, MagnitudePruning, SimpleMLP
+from gradprobe import GradProbe, MagnitudePruning, SimpleMLP, Logger, LogLevel
 
+# Initialize logger for this example
+logger = Logger(program_name='test_iterative_pruning', level=LogLevel.INFO)
 
 # Generate synthetic data
 torch.manual_seed(42)
@@ -28,7 +30,7 @@ model = SimpleMLP(input_dim=100, hidden_dims=[128, 64], output_dim=10, dropout=0
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = nn.CrossEntropyLoss()
 
-print("Training model...")
+logger.info("Training model...")
 for epoch in range(100):
     for inputs, targets in dataloader:
         optimizer.zero_grad()
@@ -61,16 +63,16 @@ def eval_fn(m):
             correct += pred.eq(targets).sum().item()
     return 100.0 * correct / total
 
-print(f"Trained accuracy: {eval_fn(model):.2f}%\n")
+logger.info(f"Trained accuracy: {eval_fn(model):.2f}%\n")
 
 # Save model state
 import copy
 saved_state = copy.deepcopy(model.state_dict())
 
 # Test 1: Regular iterative pruning
-print("="*70)
-print("TEST 1: Regular Iterative Pruning")
-print("="*70)
+logger.info("="*70)
+logger.info("TEST 1: Regular Iterative Pruning")
+logger.info("="*70)
 model.load_state_dict(saved_state)
 pruner = GradProbe(model, MagnitudePruning())
 
@@ -89,9 +91,9 @@ results = pruner.iterative_prune(
 )
 
 # Test 2: Layer-wise iterative pruning
-print("\n\n" + "="*70)
-print("TEST 2: Layer-wise Iterative Pruning")
-print("="*70)
+logger.info("\n\n" + "="*70)
+logger.info("TEST 2: Layer-wise Iterative Pruning")
+logger.info("="*70)
 model.load_state_dict(saved_state)
 pruner = GradProbe(model, MagnitudePruning())
 
@@ -109,13 +111,13 @@ results_layerwise = pruner.iterative_prune(
     compare_baseline=True
 )
 
-print("\n\n" + "="*70)
-print("COMPARISON")
-print("="*70)
-print(f"Regular pruning:")
-print(f"  Final sparsity: {results['final_sparsity']:.2%}")
-print(f"  Final accuracy: {results['final_accuracy']:.2f}%")
-print(f"\nLayer-wise pruning:")
-print(f"  Final sparsity: {results_layerwise['final_sparsity']:.2%}")
-print(f"  Final accuracy: {results_layerwise['final_accuracy']:.2f}%")
-print("="*70)
+logger.info("\n\n" + "="*70)
+logger.info("COMPARISON")
+logger.info("="*70)
+logger.info(f"Regular pruning:")
+logger.info(f"  Final sparsity: {results['final_sparsity']:.2%}")
+logger.info(f"  Final accuracy: {results['final_accuracy']:.2f}%")
+logger.info(f"\nLayer-wise pruning:")
+logger.info(f"  Final sparsity: {results_layerwise['final_sparsity']:.2%}")
+logger.info(f"  Final accuracy: {results_layerwise['final_accuracy']:.2f}%")
+logger.info("="*70)

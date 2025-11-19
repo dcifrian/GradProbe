@@ -14,42 +14,44 @@ import math
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from gradprobe import GradProbe, MagnitudePruning, WANDAPruning
+from gradprobe import GradProbe, MagnitudePruning, WANDAPruning, Logger, LogLevel
 from profile_memory import MemoryProfiler, analyze_model_memory, analyze_gradient_memory, estimate_activation_memory
+
+logger = Logger(program_name='profile_tinystories', level=LogLevel.INFO)
 
 # Try to import transformers
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 except ImportError:
-    print("transformers library not found. Please install it:")
-    print("pip install transformers")
+    logger.error("transformers library not found. Please install it:")
+    logger.error("pip install transformers")
     sys.exit(1)
 
 # Initialize memory profiler
 profiler = MemoryProfiler()
 
-print("="*70)
-print("MEMORY PROFILING: GradProbe on TinyStories-33M")
-print("="*70)
-print()
+logger.info("="*70)
+logger.info("MEMORY PROFILING: GradProbe on TinyStories-33M")
+logger.info("="*70)
+logger.info("")
 
 profiler.snapshot("00_initial")
 
-print("Loading TinyStories-33M model...")
+logger.info("Loading TinyStories-33M model...")
 model_name = "roneneldan/TinyStories-33M"
 try:
     model = AutoModelForCausalLM.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 except Exception as e:
-    print(f"Error loading model: {e}")
-    print("Trying to download...")
+    logger.error(f"Error loading model: {e}")
+    logger.info("Trying to download...")
     model = AutoModelForCausalLM.from_pretrained(model_name)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 profiler.snapshot("01_model_loaded")
 
-print(f"Model loaded successfully")
-print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+logger.info(f"Model loaded successfully")
+logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
 # Analyze model parameter memory
 num_params, param_bytes = analyze_model_memory(model)
@@ -64,9 +66,9 @@ There was a happy bunny who lived in the woods. The bunny liked to hop and play 
 A little boy named Max loved to build things. He had many blocks of different colors. One day, Max decided to build a tall tower. He stacked the blocks very carefully, one on top of another. The tower grew taller and taller until it was as high as Max's head. Max was very proud of his tower. He showed it to his mom and dad, and they clapped their hands. That night, Max dreamed about building even bigger towers."""
 
 # Tokenize
-print("\nPreparing data...")
+logger.info("\nPreparing data...")
 tokens = tokenizer.encode(test_text, return_tensors='pt')
-print(f"Total tokens: {tokens.shape[1]}")
+logger.info(f"Total tokens: {tokens.shape[1]}")
 
 # Create dataset with sliding windows - smaller for profiling
 seq_length = 128
@@ -81,7 +83,7 @@ for i in range(0, tokens.shape[1] - seq_length - 1, stride):
         input_sequences.append(input_seq)
         target_sequences.append(target_seq)
 
-print(f"Created {len(input_sequences)} sequences of length {seq_length}")
+logger.info(f"Created {len(input_sequences)} sequences of length {seq_length}")
 
 # Create dataloaders
 all_inputs = torch.cat(input_sequences, dim=0)
@@ -107,15 +109,15 @@ def loss_fn(outputs, targets):
     )
     return loss
 
-print("\n" + "="*70)
-print("STARTING GRADPROBE PRUNING - MEMORY PROFILING")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("STARTING GRADPROBE PRUNING - MEMORY PROFILING")
+logger.info("="*70)
 
 # We'll instrument the pruning process by manually stepping through it
 # This allows us to profile each stage
 
 # Initialize pruner
-print("\nInitializing GradProbe with Magnitude Pruning strategy...")
+logger.info("\nInitializing GradProbe with Magnitude Pruning strategy...")
 pruner = GradProbe(model, MagnitudePruning(), device='cpu')
 profiler.snapshot("03_pruner_initialized")
 
@@ -124,22 +126,22 @@ num_batches = 5  # Small number of batches for profiling
 reduction_factor = 0.1
 gradient_threshold = 2.0
 
-print(f"\nPruning configuration:")
-print(f"  Target sparsity: {sparsity:.2%}")
-print(f"  Num batches: {num_batches}")
-print(f"  Reduction factor: {reduction_factor}")
-print(f"  Gradient threshold: {gradient_threshold}")
+logger.info(f"\nPruning configuration:")
+logger.info(f"  Target sparsity: {sparsity:.2%}")
+logger.info(f"  Num batches: {num_batches}")
+logger.info(f"  Reduction factor: {reduction_factor}")
+logger.info(f"  Gradient threshold: {gradient_threshold}")
 
 # Save original model state
-print("\nSaving original model state...")
+logger.info("\nSaving original model state...")
 original_state = {
     name: param.data.clone() for name, param in model.named_parameters()
 }
 profiler.snapshot("04_saved_original_state")
 
 # Step 1: Compute original gradients
-print("\nStep 1: Computing gradients with original model...")
-print("  (This stores gradients for all parameters)")
+logger.info("\nStep 1: Computing gradients with original model...")
+logger.info("  (This stores gradients for all parameters)")
 
 # Manually implement gradient computation with profiling
 dropout_states = {}
@@ -155,10 +157,10 @@ gradients = {name: torch.zeros_like(param)
 profiler.snapshot("05_allocated_gradient_storage")
 
 # Analyze gradient storage memory
-print("\nAnalyzing gradient storage:")
+logger.info("\nAnalyzing gradient storage:")
 grad_bytes = analyze_gradient_memory(gradients)
-print(f"\nNote: We're storing TWO sets of gradients (original + modified)")
-print(f"Expected gradient memory: {2 * grad_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"\nNote: We're storing TWO sets of gradients (original + modified)")
+logger.info(f"Expected gradient memory: {2 * grad_bytes / 1024 / 1024:.2f} MB")
 
 batch_count = 0
 for batch_idx, batch in enumerate(dataloader_pruning):
@@ -172,7 +174,7 @@ for batch_idx, batch in enumerate(dataloader_pruning):
     inputs, targets = batch[0], batch[1]
 
     # Forward pass
-    print(f"  Processing batch {batch_count + 1}/{num_batches}...")
+    logger.info(f"  Processing batch {batch_count + 1}/{num_batches}...")
     outputs = model(inputs)
     loss = loss_fn(outputs, targets)
 
@@ -205,27 +207,27 @@ for name, module in model.named_modules():
         if dropout_states[name]:
             module.train()
 
-print("\nOriginal gradients computed and stored")
-print(f"Gradient storage: {len(gradients)} tensors")
+logger.info("\nOriginal gradients computed and stored")
+logger.info(f"Gradient storage: {len(gradients)} tensors")
 
 # Step 2: Select weights to prune
-print("\nStep 2: Selecting weights to prune using Magnitude strategy...")
+logger.info("\nStep 2: Selecting weights to prune using Magnitude strategy...")
 tentative_masks = pruner.strategy.select_weights_to_prune(model, sparsity)
 profiler.snapshot("09_tentative_masks_created")
 
 total_tentative = sum(mask.sum().item() for mask in tentative_masks.values())
-print(f"Tentative pruning candidates: {total_tentative}")
+logger.info(f"Tentative pruning candidates: {total_tentative}")
 
 # Analyze mask memory
-print("\nAnalyzing pruning mask memory:")
+logger.info("\nAnalyzing pruning mask memory:")
 mask_bytes = 0
 for name, mask in tentative_masks.items():
     mask_bytes += mask.element_size() * mask.numel()
-print(f"Mask storage: {mask_bytes / 1024 / 1024:.2f} MB")
-print(f"Note: We store masks for all parameters")
+logger.info(f"Mask storage: {mask_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"Note: We store masks for all parameters")
 
 # Step 3: Reduce tentative weights
-print(f"\nStep 3: Reducing tentative weights to {reduction_factor}x...")
+logger.info(f"\nStep 3: Reducing tentative weights to {reduction_factor}x...")
 for name, param in model.named_parameters():
     if name in tentative_masks:
         mask = tentative_masks[name]
@@ -234,8 +236,8 @@ for name, param in model.named_parameters():
 profiler.snapshot("10_weights_reduced")
 
 # Step 4: Compute modified gradients
-print("\nStep 4: Computing gradients with reduced weights...")
-print("  (This stores a SECOND set of gradients)")
+logger.info("\nStep 4: Computing gradients with reduced weights...")
+logger.info("  (This stores a SECOND set of gradients)")
 
 # Initialize storage for modified gradients
 modified_gradients = {name: torch.zeros_like(param)
@@ -244,13 +246,13 @@ modified_gradients = {name: torch.zeros_like(param)
 
 profiler.snapshot("11_allocated_modified_gradient_storage")
 
-print("\nNOTE: At this point we have:")
-print(f"  - Original model weights: {param_bytes / 1024 / 1024:.2f} MB")
-print(f"  - Original gradients: {grad_bytes / 1024 / 1024:.2f} MB")
-print(f"  - Modified gradients: {grad_bytes / 1024 / 1024:.2f} MB")
-print(f"  - Pruning masks: {mask_bytes / 1024 / 1024:.2f} MB")
-print(f"  - Saved original state: {param_bytes / 1024 / 1024:.2f} MB")
-print(f"  TOTAL (weights + gradients): {(2 * param_bytes + 2 * grad_bytes + mask_bytes) / 1024 / 1024:.2f} MB")
+logger.info("\nNOTE: At this point we have:")
+logger.info(f"  - Original model weights: {param_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"  - Original gradients: {grad_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"  - Modified gradients: {grad_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"  - Pruning masks: {mask_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"  - Saved original state: {param_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"  TOTAL (weights + gradients): {(2 * param_bytes + 2 * grad_bytes + mask_bytes) / 1024 / 1024:.2f} MB")
 
 # Compute modified gradients (just first 2 batches for profiling)
 batch_count = 0
@@ -261,7 +263,7 @@ for batch_idx, batch in enumerate(dataloader_pruning):
     model.zero_grad()
     inputs, targets = batch[0], batch[1]
 
-    print(f"  Processing batch {batch_count + 1}/2...")
+    logger.info(f"  Processing batch {batch_count + 1}/2...")
     outputs = model(inputs)
     loss = loss_fn(outputs, targets)
 
@@ -283,7 +285,7 @@ for batch_idx, batch in enumerate(dataloader_pruning):
 profiler.snapshot("14_modified_gradients_computed")
 
 # Step 5: Compare gradients and decide
-print("\nStep 5: Comparing gradients and making pruning decisions...")
+logger.info("\nStep 5: Comparing gradients and making pruning decisions...")
 
 final_masks = {}
 for name in tentative_masks:
@@ -299,7 +301,7 @@ for name in tentative_masks:
 profiler.snapshot("15_final_masks_computed")
 
 # Step 6: Apply final pruning
-print("\nStep 6: Applying final pruning...")
+logger.info("\nStep 6: Applying final pruning...")
 
 # Restore weights
 for name, param in model.named_parameters():
@@ -319,52 +321,52 @@ total_params = sum(p.numel() for p in model.parameters())
 zero_params = sum((p.data == 0).sum().item() for p in model.parameters())
 final_sparsity = zero_params / total_params
 
-print(f"\nFinal sparsity: {final_sparsity:.2%}")
-print(f"Pruned {zero_params:,} out of {total_params:,} parameters")
+logger.info(f"\nFinal sparsity: {final_sparsity:.2%}")
+logger.info(f"Pruned {zero_params:,} out of {total_params:,} parameters")
 
 # Print full profiling results
-print("\n" + "="*70)
-print("MEMORY PROFILING RESULTS")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("MEMORY PROFILING RESULTS")
+logger.info("="*70)
 
 profiler.print_summary()
 
-print("\n" + "="*70)
-print("KEY FINDINGS")
-print("="*70)
-print(f"\n1. Model Parameters: {param_bytes / 1024 / 1024:.2f} MB")
-print(f"   - Stored once in model")
-print(f"   - Copied once in 'original_state' dict")
-print(f"   - TOTAL: {2 * param_bytes / 1024 / 1024:.2f} MB")
+logger.info("\n" + "="*70)
+logger.info("KEY FINDINGS")
+logger.info("="*70)
+logger.info(f"\n1. Model Parameters: {param_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"   - Stored once in model")
+logger.info(f"   - Copied once in 'original_state' dict")
+logger.info(f"   - TOTAL: {2 * param_bytes / 1024 / 1024:.2f} MB")
 
-print(f"\n2. Gradients: {grad_bytes / 1024 / 1024:.2f} MB per set")
-print(f"   - Original gradients: {grad_bytes / 1024 / 1024:.2f} MB")
-print(f"   - Modified gradients: {grad_bytes / 1024 / 1024:.2f} MB")
-print(f"   - TOTAL: {2 * grad_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"\n2. Gradients: {grad_bytes / 1024 / 1024:.2f} MB per set")
+logger.info(f"   - Original gradients: {grad_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"   - Modified gradients: {grad_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"   - TOTAL: {2 * grad_bytes / 1024 / 1024:.2f} MB")
 
-print(f"\n3. Pruning Masks: {mask_bytes / 1024 / 1024:.2f} MB")
-print(f"   - Boolean masks for all parameters")
+logger.info(f"\n3. Pruning Masks: {mask_bytes / 1024 / 1024:.2f} MB")
+logger.info(f"   - Boolean masks for all parameters")
 
-print(f"\n4. Activations (per forward pass):")
-print(f"   - Estimated from model config")
-print(f"   - Not stored between passes, but used during forward/backward")
+logger.info(f"\n4. Activations (per forward pass):")
+logger.info(f"   - Estimated from model config")
+logger.info(f"   - Not stored between passes, but used during forward/backward")
 
 expected_total = (2 * param_bytes + 2 * grad_bytes + mask_bytes) / 1024 / 1024
-print(f"\nEXPECTED MINIMUM MEMORY (without activations): {expected_total:.2f} MB")
+logger.info(f"\nEXPECTED MINIMUM MEMORY (without activations): {expected_total:.2f} MB")
 
 # Get actual peak
 peak_snapshot = max(profiler.snapshots, key=lambda s: s.process_rss_mb)
-print(f"ACTUAL PEAK MEMORY: {peak_snapshot.process_rss_mb:.2f} MB")
-print(f"  at stage: {peak_snapshot.stage}")
+logger.info(f"ACTUAL PEAK MEMORY: {peak_snapshot.process_rss_mb:.2f} MB")
+logger.info(f"  at stage: {peak_snapshot.stage}")
 
 overhead = peak_snapshot.process_rss_mb - expected_total
-print(f"\nOVERHEAD (activations + Python + OS): {overhead:.2f} MB")
+logger.info(f"\nOVERHEAD (activations + Python + OS): {overhead:.2f} MB")
 
-print("\n" + "="*70)
-print("DETAILED SNAPSHOTS")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("DETAILED SNAPSHOTS")
+logger.info("="*70)
 profiler.print_all_snapshots()
 
-print("\n" + "="*70)
-print("PROFILING COMPLETE")
-print("="*70)
+logger.info("\n" + "="*70)
+logger.info("PROFILING COMPLETE")
+logger.info("="*70)

@@ -15,7 +15,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from gradprobe import GradProbe, MagnitudePruning, SimpleMLP
+from gradprobe import GradProbe, MagnitudePruning, SimpleMLP, Logger, LogLevel, get_logger
 
 
 def generate_synthetic_data(num_samples=1000, input_dim=100, output_dim=10, pattern_weights=None):
@@ -68,7 +68,7 @@ def train_model(model, dataloader, epochs=5, lr=0.001):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    print(f"\nTraining model for {epochs} epochs...")
+    get_logger().info(f"\nTraining model for {epochs} epochs...")
     for epoch in range(epochs):
         total_loss = 0
         correct = 0
@@ -90,7 +90,7 @@ def train_model(model, dataloader, epochs=5, lr=0.001):
 
         avg_loss = total_loss / len(dataloader)
         accuracy = 100. * correct / total
-        print(f"Epoch {epoch+1}/{epochs}: Loss: {avg_loss:.4f}, Accuracy: {accuracy:.2f}%")
+        get_logger().info(f"Epoch {epoch+1}/{epochs}: Loss: {avg_loss:.4f}, Accuracy: {accuracy:.2f}%")
 
     return model
 
@@ -129,9 +129,11 @@ def evaluate_model(model, dataloader, device=None):
 
 def main():
     """Main function."""
-    print("="*70)
-    print("GradProbe: Gradient-based Neural Network Pruning")
-    print("="*70)
+    logger = Logger(program_name='prune_mlp', level=LogLevel.INFO)
+
+    logger.info("="*70)
+    logger.info("GradProbe: Gradient-based Neural Network Pruning")
+    logger.info("="*70)
 
     # Configuration
     device = 'cpu'
@@ -143,7 +145,7 @@ def main():
     # Generate synthetic data
     # Note: For synthetic data, we evaluate on the training set to see the
     # impact of pruning. With real models/data, use a separate test set.
-    print("\n1. Generating synthetic data...")
+    logger.info("\n1. Generating synthetic data...")
     train_loader, pattern_weights = generate_synthetic_data(
         num_samples=1000,
         input_dim=input_dim,
@@ -151,7 +153,7 @@ def main():
     )
 
     # Create model
-    print("\n2. Creating model...")
+    logger.info("\n2. Creating model...")
     model = SimpleMLP(
         input_dim=input_dim,
         hidden_dims=hidden_dims,
@@ -161,27 +163,27 @@ def main():
     )
 
     param_counts = model.count_parameters()
-    print(f"Model created with {param_counts['total']} total parameters")
-    print(f"Architecture: {input_dim} -> {' -> '.join(map(str, hidden_dims))} -> {output_dim}")
+    logger.info(f"Model created with {param_counts['total']} total parameters")
+    logger.info(f"Architecture: {input_dim} -> {' -> '.join(map(str, hidden_dims))} -> {output_dim}")
 
     # Train model
-    print("\n3. Training model...")
+    logger.info("\n3. Training model...")
     model = train_model(model, train_loader, epochs=100, lr=0.001, device=device)
     model = train_model(model, train_loader, epochs=100, lr=0.0001, device=device)
 
     # Evaluate before pruning (on training set for synthetic data)
-    print("\n4. Evaluating model before pruning...")
+    logger.info("\n4. Evaluating model before pruning...")
     accuracy_before = evaluate_model(model, train_loader, device=device)
-    print(f"Training accuracy before pruning: {accuracy_before:.2f}%")
+    logger.info(f"Training accuracy before pruning: {accuracy_before:.2f}%")
 
     # Create pruner
-    print("\n5. Creating GradProbe pruner...")
+    logger.info("\n5. Creating GradProbe pruner...")
     strategy = MagnitudePruning()
     pruner = GradProbe(model, strategy, device=device)
 
     # Prune the model
-    print(f"\n6. Pruning model with target sparsity: {sparsity:.1%}...")
-    print("-" * 70)
+    logger.info(f"\n6. Pruning model with target sparsity: {sparsity:.1%}...")
+    logger.info("-" * 70)
     pruning_masks = pruner.prune(
         dataloader=train_loader,
         loss_fn=nn.CrossEntropyLoss(),
@@ -190,40 +192,40 @@ def main():
         reduction_factor=0.1,  # Reduce weights to 1/10
         verbose=True
     )
-    print("-" * 70)
+    logger.info("-" * 70)
 
     # Evaluate after pruning
-    print("\n7. Evaluating model after pruning...")
+    logger.info("\n7. Evaluating model after pruning...")
     accuracy_after = evaluate_model(model, train_loader, device=device)
-    print(f"Training accuracy after pruning: {accuracy_after:.2f}%")
+    logger.info(f"Training accuracy after pruning: {accuracy_after:.2f}%")
 
     # Print comparison
-    print("\n" + "="*70)
-    print("RESULTS SUMMARY")
-    print("="*70)
+    logger.info("\n" + "="*70)
+    logger.info("RESULTS SUMMARY")
+    logger.info("="*70)
     actual_sparsity = pruner.get_sparsity()
-    print(f"Target sparsity:        {sparsity:.2%}")
-    print(f"Actual sparsity:        {actual_sparsity:.2%}")
-    print(f"Accuracy before:        {accuracy_before:.2f}%")
-    print(f"Accuracy after:         {accuracy_after:.2f}%")
-    print(f"Accuracy change:        {accuracy_after - accuracy_before:+.2f}%")
-    print(f"Parameters remaining:   {(1-actual_sparsity)*param_counts['total']:.0f} / {param_counts['total']}")
-    print("="*70)
+    logger.info(f"Target sparsity:        {sparsity:.2%}")
+    logger.info(f"Actual sparsity:        {actual_sparsity:.2%}")
+    logger.info(f"Accuracy before:        {accuracy_before:.2f}%")
+    logger.info(f"Accuracy after:         {accuracy_after:.2f}%")
+    logger.info(f"Accuracy change:        {accuracy_after - accuracy_before:+.2f}%")
+    logger.info(f"Parameters remaining:   {(1-actual_sparsity)*param_counts['total']:.0f} / {param_counts['total']}")
+    logger.info("="*70)
 
     # Optional: Fine-tune the pruned model
-    print("\n8. Fine-tuning pruned model...")
+    logger.info("\n8. Fine-tuning pruned model...")
     pruner.apply_mask_permanently()  # Make pruning permanent
     model = train_model(model, train_loader, epochs=5, lr=0.0001, device=device)
 
     accuracy_finetuned = evaluate_model(model, train_loader, device=device)
-    print(f"\nTraining accuracy after fine-tuning: {accuracy_finetuned:.2f}%")
-    print(f"Final accuracy change:               {accuracy_finetuned - accuracy_before:+.2f}%")
+    logger.info(f"\nTraining accuracy after fine-tuning: {accuracy_finetuned:.2f}%")
+    logger.info(f"Final accuracy change:               {accuracy_finetuned - accuracy_before:+.2f}%")
 
     # Optional: Test different gradient thresholds
-    print("\n" + "="*70)
-    print("9. BONUS: Testing different gradient thresholds")
-    print("="*70)
-    print("This shows how threshold affects pruning aggressiveness vs accuracy")
+    logger.info("\n" + "="*70)
+    logger.info("9. BONUS: Testing different gradient thresholds")
+    logger.info("="*70)
+    logger.info("This shows how threshold affects pruning aggressiveness vs accuracy")
 
     # Restore model to pre-pruning state for fair comparison
     # Re-train from scratch
@@ -257,9 +259,9 @@ def main():
         verbose=True
     )
 
-    print("\n" + "="*70)
-    print("Done!")
-    print("="*70)
+    logger.info("\n" + "="*70)
+    logger.info("Done!")
+    logger.info("="*70)
 
 
 if __name__ == "__main__":

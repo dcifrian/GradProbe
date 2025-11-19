@@ -10,14 +10,16 @@ sys.path.insert(0, os.path.abspath('.'))
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from torch.utils.data import DataLoader
-from gradprobe import GradProbe, WANDAPruning
+from gradprobe import GradProbe, WANDAPruning, Logger, LogLevel
 
-print('='*70)
-print('LAYERWISE WANDA WITH RECALCULATION TEST')
-print('='*70)
+logger = Logger(program_name='test_layerwise_recalc', level=LogLevel.INFO)
+
+logger.info('='*70)
+logger.info('LAYERWISE WANDA WITH RECALCULATION TEST')
+logger.info('='*70)
 
 # Load model
-print('\nLoading TinyStories-33M...')
+logger.info('\nLoading TinyStories-33M...')
 model = AutoModelForCausalLM.from_pretrained('roneneldan/TinyStories-33M')
 tokenizer = AutoTokenizer.from_pretrained('roneneldan/TinyStories-33M')
 
@@ -46,9 +48,9 @@ wanda = WANDAPruning(dataloader=dataloader, num_batches=1)
 pruner = GradProbe(model=model, strategy=wanda)
 
 # Test layerwise pruning at 30% sparsity
-print('\nPruning layerwise at 30% sparsity...')
-print('This will recalculate WANDA after each layer is pruned.')
-print()
+logger.info('\nPruning layerwise at 30% sparsity...')
+logger.info('This will recalculate WANDA after each layer is pruned.')
+logger.info('')
 
 masks = pruner.prune_layerwise(
     dataloader=dataloader,
@@ -66,11 +68,11 @@ total_pruned = sum(mask.sum().item() for mask in masks.values())
 total_weights = sum(mask.numel() for mask in masks.values())
 actual_sparsity = total_pruned / total_weights
 
-print(f'\n' + '='*70)
-print(f'RESULTS')
-print(f'='*70)
-print(f'Total pruned: {total_pruned:,} / {total_weights:,}')
-print(f'Actual sparsity: {actual_sparsity:.4f} (target: 0.3000)')
+logger.info(f'\n' + '='*70)
+logger.info(f'RESULTS')
+logger.info(f'='*70)
+logger.info(f'Total pruned: {total_pruned:,} / {total_weights:,}')
+logger.info(f'Actual sparsity: {actual_sparsity:.4f} (target: 0.3000)')
 
 # Check per-layer variance
 layer_sparsities = []
@@ -81,12 +83,12 @@ for name, mask in masks.items():
 
 if layer_sparsities:
     import statistics
-    print(f'\nPer-layer sparsity stats:')
-    print(f'  Mean: {statistics.mean(layer_sparsities):.4f}')
-    print(f'  Std:  {statistics.stdev(layer_sparsities):.4f}')
-    print(f'  Min:  {min(layer_sparsities):.4f}')
-    print(f'  Max:  {max(layer_sparsities):.4f}')
+    logger.info(f'\nPer-layer sparsity stats:')
+    logger.info(f'  Mean: {statistics.mean(layer_sparsities):.4f}')
+    logger.info(f'  Std:  {statistics.stdev(layer_sparsities):.4f}')
+    logger.info(f'  Min:  {min(layer_sparsities):.4f}')
+    logger.info(f'  Max:  {max(layer_sparsities):.4f}')
 
-print(f'\n' + '='*70)
-print('SUCCESS: Layerwise pruning with recalculation complete!')
-print('='*70)
+logger.info(f'\n' + '='*70)
+logger.info('SUCCESS: Layerwise pruning with recalculation complete!')
+logger.info('='*70)
