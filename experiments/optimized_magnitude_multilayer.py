@@ -21,6 +21,13 @@ import time
 import gc
 import psutil
 from typing import Dict, List, Tuple
+import sys
+sys.path.insert(0, '/home/user/GradProbe')
+
+from gradprobe.logger import Logger, LogLevel
+
+# Initialize logger
+logger = Logger(program_name='optimized_magnitude_multilayer', level=LogLevel.INFO)
 
 
 def get_memory_usage():
@@ -194,15 +201,15 @@ def compare_multilayer(
 
     total_params = sum(p.numel() for _, p in layers)
 
-    print(f"\n{'='*70}")
-    print(f"Comparing Multi-Layer Magnitude Pruning")
-    print(f"{'='*70}")
-    print(f"Number of layers: {len(layers)}")
-    print(f"Total weights: {total_params:,}")
-    print(f"Target sparsity: {sparsity:.1%}")
-    print(f"Device: {device}")
-    print(f"Trials: {num_trials}")
-    print()
+    logger.info(f"\n{'='*70}")
+    logger.info(f"Comparing Multi-Layer Magnitude Pruning")
+    logger.info(f"{'='*70}")
+    logger.info(f"Number of layers: {len(layers)}")
+    logger.info(f"Total weights: {total_params:,}")
+    logger.info(f"Target sparsity: {sparsity:.1%}")
+    logger.info(f"Device: {device}")
+    logger.info(f"Trials: {num_trials}")
+    logger.info()
 
     # Warm up
     _ = current_magnitude_all_layers(layers, sparsity, device)
@@ -210,7 +217,7 @@ def compare_multilayer(
     gc.collect()
 
     # Test current approach
-    print("Testing CURRENT approach (concat + kthvalue)...")
+    logger.info("Testing CURRENT approach (concat + kthvalue)...")
     current_times = []
     current_mems = []
     current_masks = None
@@ -224,12 +231,12 @@ def compare_multilayer(
         if i == 0:
             current_masks = masks
             concat_size = concat_gb
-        print(f"  Trial {i+1}: {time_taken*1000:.2f}ms, {mem_used*1000:.2f}MB")
+        logger.memory(f"  Trial {i+1}: {time_taken*1000:.2f}ms, {mem_used*1000:.2f}MB")
 
-    print()
+    logger.info()
 
     # Test optimized approach
-    print("Testing OPTIMIZED approach (streaming + binary search)...")
+    logger.info("Testing OPTIMIZED approach (streaming + binary search)...")
     opt_times = []
     opt_mems = []
     opt_masks = None
@@ -241,7 +248,7 @@ def compare_multilayer(
         opt_mems.append(mem_used)
         if i == 0:
             opt_masks = masks
-        print(f"  Trial {i+1}: {time_taken*1000:.2f}ms, {mem_used*1000:.2f}MB")
+        logger.memory(f"  Trial {i+1}: {time_taken*1000:.2f}ms, {mem_used*1000:.2f}MB")
 
     # Check sparsity and agreement
     current_sparsity = sum(m.sum().item() for m in current_masks.values()) / total_params
@@ -250,41 +257,41 @@ def compare_multilayer(
     total_agree = sum((current_masks[name] == opt_masks[name]).sum().item() for name in current_masks)
     agreement = total_agree / total_params
 
-    print()
-    print(f"{'='*70}")
-    print("RESULTS")
-    print(f"{'='*70}")
+    logger.info()
+    logger.info(f"{'='*70}")
+    logger.info("RESULTS")
+    logger.info(f"{'='*70}")
 
-    print(f"\nConcatenated tensor size: {concat_size*1024:.1f}MB")
+    logger.memory(f"\nConcatenated tensor size: {concat_size*1024:.1f}MB")
 
-    print(f"\nSparsity achieved:")
-    print(f"  Target:     {sparsity:.4%}")
-    print(f"  Current:    {current_sparsity:.4%} (error: {abs(current_sparsity - sparsity):.4%})")
-    print(f"  Optimized:  {opt_sparsity:.4%} (error: {abs(opt_sparsity - sparsity):.4%})")
+    logger.info(f"\nSparsity achieved:")
+    logger.info(f"  Target:     {sparsity:.4%}")
+    logger.info(f"  Current:    {current_sparsity:.4%} (error: {abs(current_sparsity - sparsity):.4%})")
+    logger.info(f"  Optimized:  {opt_sparsity:.4%} (error: {abs(opt_sparsity - sparsity):.4%})")
 
-    print(f"\nMask agreement: {agreement:.4%}")
+    logger.info(f"\nMask agreement: {agreement:.4%}")
 
-    print(f"\nTime (average over {num_trials} trials):")
+    logger.info(f"\nTime (average over {num_trials} trials):")
     avg_current_time = sum(current_times) / len(current_times)
     avg_opt_time = sum(opt_times) / len(opt_times)
-    print(f"  Current:    {avg_current_time*1000:.2f}ms")
-    print(f"  Optimized:  {avg_opt_time*1000:.2f}ms")
+    logger.info(f"  Current:    {avg_current_time*1000:.2f}ms")
+    logger.info(f"  Optimized:  {avg_opt_time*1000:.2f}ms")
     if avg_current_time > 0:
         speedup = avg_current_time / avg_opt_time
-        print(f"  Speedup:    {speedup:.2f}x {'FASTER' if speedup > 1 else 'SLOWER'}")
+        logger.info(f"  Speedup:    {speedup:.2f}x {'FASTER' if speedup > 1 else 'SLOWER'}")
 
-    print(f"\nMemory (average over {num_trials} trials):")
+    logger.info(f"\nMemory (average over {num_trials} trials):")
     avg_current_mem = sum(current_mems) / len(current_mems)
     avg_opt_mem = sum(opt_mems) / len(opt_mems)
-    print(f"  Current:    {avg_current_mem*1000:.2f}MB")
-    print(f"  Optimized:  {avg_opt_mem*1000:.2f}MB")
+    logger.memory(f"  Current:    {avg_current_mem*1000:.2f}MB")
+    logger.memory(f"  Optimized:  {avg_opt_mem*1000:.2f}MB")
     if avg_current_mem > 0:
         mem_savings = (avg_current_mem - avg_opt_mem) / avg_current_mem * 100
-        print(f"  Savings:    {mem_savings:.1f}%")
+        logger.info(f"  Savings:    {mem_savings:.1f}%")
     else:
         mem_savings = 0
 
-    print(f"\n{'='*70}\n")
+    logger.info(f"\n{'='*70}\n")
 
     return {
         'num_layers': len(layers),
@@ -301,14 +308,11 @@ def compare_multilayer(
 
 
 if __name__ == "__main__":
-    import sys
-    sys.path.insert(0, '/home/user/GradProbe')
-
     from transformers import AutoModelForCausalLM
 
-    print("Loading TinyStories-33M model...")
+    logger.info("Loading TinyStories-33M model...")
     model = AutoModelForCausalLM.from_pretrained("roneneldan/TinyStories-33M")
-    print(f"Model loaded. Total parameters: {sum(p.numel() for p in model.parameters()):,}\n")
+    logger.info(f"Model loaded. Total parameters: {sum(p.numel() for p in model.parameters()):,}\n")
 
     # Test scenarios
     scenarios = [
@@ -337,9 +341,9 @@ if __name__ == "__main__":
     all_results = []
 
     for scenario_name, layers in scenarios:
-        print(f"\n{'#'*70}")
-        print(f"# Scenario: {scenario_name}")
-        print(f"{'#'*70}")
+        logger.info(f"\n{'#'*70}")
+        logger.info(f"# Scenario: {scenario_name}")
+        logger.info(f"{'#'*70}")
 
         for sparsity in sparsities:
             results = compare_multilayer(layers, sparsity, device='cpu', num_trials=3)
@@ -348,32 +352,32 @@ if __name__ == "__main__":
             all_results.append(results)
 
     # Summary
-    print(f"\n{'#'*70}")
-    print("# SUMMARY")
-    print(f"{'#'*70}\n")
+    logger.info(f"\n{'#'*70}")
+    logger.info("# SUMMARY")
+    logger.info(f"{'#'*70}\n")
 
-    print(f"{'Scenario':<30} {'Params':<12} {'Sparsity':<10} {'Speedup':<10} {'Concat Size':<12}")
-    print("-" * 80)
+    logger.info(f"{'Scenario':<30} {'Params':<12} {'Sparsity':<10} {'Speedup':<10} {'Concat Size':<12}")
+    logger.info("-" * 80)
     for r in all_results:
-        print(f"{r['scenario']:<30} {r['total_params']:<12,} {r['sparsity']:<10.1%} "
+        logger.info(f"{r['scenario']:<30} {r['total_params']:<12,} {r['sparsity']:<10.1%} "
               f"{r['speedup']:<10.2f}x {r['concat_size_mb']:<12.1f}MB")
 
     avg_speedup = sum(r['speedup'] for r in all_results) / len(all_results)
     avg_agreement = sum(r['agreement'] for r in all_results) / len(all_results)
 
-    print("\n" + "="*80)
-    print("OVERALL RESULTS:")
-    print(f"  Average speedup:    {avg_speedup:.2f}x")
-    print(f"  Average agreement:  {avg_agreement:.4%}")
-    print("="*80)
+    logger.info("\n" + "="*80)
+    logger.info("OVERALL RESULTS:")
+    logger.info(f"  Average speedup:    {avg_speedup:.2f}x")
+    logger.info(f"  Average agreement:  {avg_agreement:.4%}")
+    logger.info("="*80)
 
     if avg_speedup > 1.2 and avg_agreement > 0.995:
-        print("\n✅ OPTIMIZATION SUCCESSFUL FOR MULTI-LAYER!")
-        print("   Significantly faster with high mask agreement.")
-        print("   This optimization should be applied to real strategies.")
+        logger.info("\n✅ OPTIMIZATION SUCCESSFUL FOR MULTI-LAYER!")
+        logger.info("   Significantly faster with high mask agreement.")
+        logger.info("   This optimization should be applied to real strategies.")
     elif avg_speedup > 1.0:
-        print("\n⚠️  OPTIMIZATION SHOWS PROMISE")
-        print("   Modest speedup. May need more tuning.")
+        logger.info("\n⚠️  OPTIMIZATION SHOWS PROMISE")
+        logger.info("   Modest speedup. May need more tuning.")
     else:
-        print("\n❌ OPTIMIZATION NOT BENEFICIAL")
-        print("   Current approach is faster.")
+        logger.info("\n❌ OPTIMIZATION NOT BENEFICIAL")
+        logger.info("   Current approach is faster.")

@@ -14,6 +14,13 @@ import time
 import gc
 import psutil
 from typing import Dict, Tuple
+import sys
+sys.path.insert(0, '/home/user/GradProbe')
+
+from gradprobe.logger import Logger, LogLevel
+
+# Initialize logger
+logger = Logger(program_name='optimized_magnitude', level=LogLevel.INFO)
 
 
 def get_memory_usage():
@@ -175,15 +182,15 @@ def compare_approaches(
     """
     Compare current vs optimized approach.
     """
-    print(f"\n{'='*70}")
-    print(f"Comparing Magnitude Pruning Approaches")
-    print(f"{'='*70}")
-    print(f"Parameter shape: {param.shape}")
-    print(f"Total weights: {param.numel():,}")
-    print(f"Target sparsity: {sparsity:.1%}")
-    print(f"Device: {device}")
-    print(f"Trials: {num_trials}")
-    print()
+    logger.info(f"\n{'='*70}")
+    logger.info(f"Comparing Magnitude Pruning Approaches")
+    logger.info(f"{'='*70}")
+    logger.info(f"Parameter shape: {param.shape}")
+    logger.info(f"Total weights: {param.numel():,}")
+    logger.info(f"Target sparsity: {sparsity:.1%}")
+    logger.info(f"Device: {device}")
+    logger.info(f"Trials: {num_trials}")
+    logger.info()
 
     # Warm up
     _ = current_magnitude_single_layer(param, sparsity, device)
@@ -191,7 +198,7 @@ def compare_approaches(
     gc.collect()
 
     # Test current approach
-    print("Testing CURRENT approach (kthvalue)...")
+    logger.info("Testing CURRENT approach (kthvalue)...")
     current_times = []
     current_mems = []
     current_mask = None
@@ -203,14 +210,14 @@ def compare_approaches(
         current_mems.append(mem_used)
         if i == 0:
             current_mask = mask
-        print(f"  Trial {i+1}: {time_taken*1000:.2f}ms, {mem_used*1000:.2f}MB")
+        logger.memory(f"  Trial {i+1}: {time_taken*1000:.2f}ms, {mem_used*1000:.2f}MB")
 
     current_sparsity = current_mask.sum().item() / current_mask.numel()
 
-    print()
+    logger.info()
 
     # Test optimized approach
-    print("Testing OPTIMIZED approach (mean/std + binary search)...")
+    logger.info("Testing OPTIMIZED approach (mean/std + binary search)...")
     opt_times = []
     opt_mems = []
     opt_mask = None
@@ -222,44 +229,44 @@ def compare_approaches(
         opt_mems.append(mem_used)
         if i == 0:
             opt_mask = mask
-        print(f"  Trial {i+1}: {time_taken*1000:.2f}ms, {mem_used*1000:.2f}MB")
+        logger.memory(f"  Trial {i+1}: {time_taken*1000:.2f}ms, {mem_used*1000:.2f}MB")
 
     opt_sparsity = opt_mask.sum().item() / opt_mask.numel()
 
     # Check agreement between masks
     agreement = (current_mask == opt_mask).sum().item() / current_mask.numel()
 
-    print()
-    print(f"{'='*70}")
-    print("RESULTS")
-    print(f"{'='*70}")
+    logger.info()
+    logger.info(f"{'='*70}")
+    logger.info("RESULTS")
+    logger.info(f"{'='*70}")
 
-    print(f"\nSparsity achieved:")
-    print(f"  Target:     {sparsity:.4%}")
-    print(f"  Current:    {current_sparsity:.4%} (error: {abs(current_sparsity - sparsity):.4%})")
-    print(f"  Optimized:  {opt_sparsity:.4%} (error: {abs(opt_sparsity - sparsity):.4%})")
+    logger.info(f"\nSparsity achieved:")
+    logger.info(f"  Target:     {sparsity:.4%}")
+    logger.info(f"  Current:    {current_sparsity:.4%} (error: {abs(current_sparsity - sparsity):.4%})")
+    logger.info(f"  Optimized:  {opt_sparsity:.4%} (error: {abs(opt_sparsity - sparsity):.4%})")
 
-    print(f"\nMask agreement: {agreement:.4%}")
+    logger.info(f"\nMask agreement: {agreement:.4%}")
 
-    print(f"\nTime (average over {num_trials} trials):")
+    logger.info(f"\nTime (average over {num_trials} trials):")
     avg_current_time = sum(current_times) / len(current_times)
     avg_opt_time = sum(opt_times) / len(opt_times)
-    print(f"  Current:    {avg_current_time*1000:.2f}ms")
-    print(f"  Optimized:  {avg_opt_time*1000:.2f}ms")
+    logger.info(f"  Current:    {avg_current_time*1000:.2f}ms")
+    logger.info(f"  Optimized:  {avg_opt_time*1000:.2f}ms")
     if avg_current_time > 0:
         speedup = avg_current_time / avg_opt_time
-        print(f"  Speedup:    {speedup:.2f}x {'FASTER' if speedup > 1 else 'SLOWER'}")
+        logger.info(f"  Speedup:    {speedup:.2f}x {'FASTER' if speedup > 1 else 'SLOWER'}")
 
-    print(f"\nMemory (average over {num_trials} trials):")
+    logger.info(f"\nMemory (average over {num_trials} trials):")
     avg_current_mem = sum(current_mems) / len(current_mems)
     avg_opt_mem = sum(opt_mems) / len(opt_mems)
-    print(f"  Current:    {avg_current_mem*1000:.2f}MB")
-    print(f"  Optimized:  {avg_opt_mem*1000:.2f}MB")
+    logger.memory(f"  Current:    {avg_current_mem*1000:.2f}MB")
+    logger.memory(f"  Optimized:  {avg_opt_mem*1000:.2f}MB")
     if avg_current_mem > 0:
         mem_savings = (avg_current_mem - avg_opt_mem) / avg_current_mem * 100
-        print(f"  Savings:    {mem_savings:.1f}%")
+        logger.info(f"  Savings:    {mem_savings:.1f}%")
 
-    print(f"\n{'='*70}\n")
+    logger.info(f"\n{'='*70}\n")
 
     return {
         'current_time': avg_current_time,
@@ -275,14 +282,11 @@ def compare_approaches(
 
 
 if __name__ == "__main__":
-    import sys
-    sys.path.insert(0, '/home/user/GradProbe')
-
     from transformers import AutoModelForCausalLM
 
-    print("Loading TinyStories-33M model...")
+    logger.info("Loading TinyStories-33M model...")
     model = AutoModelForCausalLM.from_pretrained("roneneldan/TinyStories-33M")
-    print(f"Model loaded. Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+    logger.info(f"Model loaded. Total parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Test on different layer sizes
     test_layers = [
@@ -296,9 +300,9 @@ if __name__ == "__main__":
     all_results = []
 
     for layer_name, param in test_layers:
-        print(f"\n{'#'*70}")
-        print(f"# Testing: {layer_name}")
-        print(f"{'#'*70}")
+        logger.info(f"\n{'#'*70}")
+        logger.info(f"# Testing: {layer_name}")
+        logger.info(f"{'#'*70}")
 
         for sparsity in sparsities:
             results = compare_approaches(param, sparsity, device='cpu', num_trials=3)
@@ -308,14 +312,14 @@ if __name__ == "__main__":
             all_results.append(results)
 
     # Summary
-    print(f"\n{'#'*70}")
-    print("# SUMMARY")
-    print(f"{'#'*70}\n")
+    logger.info(f"\n{'#'*70}")
+    logger.info("# SUMMARY")
+    logger.info(f"{'#'*70}\n")
 
-    print(f"{'Layer':<20} {'Sparsity':<10} {'Speedup':<10} {'Mem Savings':<12} {'Agreement':<12}")
-    print("-" * 70)
+    logger.info(f"{'Layer':<20} {'Sparsity':<10} {'Speedup':<10} {'Mem Savings':<12} {'Agreement':<12}")
+    logger.info("-" * 70)
     for r in all_results:
-        print(f"{r['layer']:<20} {r['sparsity']:<10.1%} {r['speedup']:<10.2f}x "
+        logger.info(f"{r['layer']:<20} {r['sparsity']:<10.1%} {r['speedup']:<10.2f}x "
               f"{r['mem_savings']:<12.1f}% {r['agreement']:<12.2%}")
 
     # Overall statistics
@@ -323,19 +327,19 @@ if __name__ == "__main__":
     avg_mem_savings = sum(r['mem_savings'] for r in all_results) / len(all_results)
     avg_agreement = sum(r['agreement'] for r in all_results) / len(all_results)
 
-    print("\n" + "="*70)
-    print("OVERALL AVERAGES:")
-    print(f"  Speedup:        {avg_speedup:.2f}x")
-    print(f"  Memory savings: {avg_mem_savings:.1f}%")
-    print(f"  Mask agreement: {avg_agreement:.2%}")
-    print("="*70)
+    logger.info("\n" + "="*70)
+    logger.info("OVERALL AVERAGES:")
+    logger.info(f"  Speedup:        {avg_speedup:.2f}x")
+    logger.info(f"  Memory savings: {avg_mem_savings:.1f}%")
+    logger.info(f"  Mask agreement: {avg_agreement:.2%}")
+    logger.info("="*70)
 
     if avg_speedup > 1.2 and avg_agreement > 0.95:
-        print("\n✅ OPTIMIZATION SUCCESSFUL!")
-        print("   The optimized approach is significantly faster with high agreement.")
+        logger.info("\n✅ OPTIMIZATION SUCCESSFUL!")
+        logger.info("   The optimized approach is significantly faster with high agreement.")
     elif avg_speedup > 1.0 and avg_agreement > 0.98:
-        print("\n✅ OPTIMIZATION PROMISING!")
-        print("   The optimized approach is faster with very high agreement.")
+        logger.info("\n✅ OPTIMIZATION PROMISING!")
+        logger.info("   The optimized approach is faster with very high agreement.")
     else:
-        print("\n⚠️  OPTIMIZATION NEEDS WORK")
-        print("   Either not fast enough or agreement is too low.")
+        logger.info("\n⚠️  OPTIMIZATION NEEDS WORK")
+        logger.info("   Either not fast enough or agreement is too low.")

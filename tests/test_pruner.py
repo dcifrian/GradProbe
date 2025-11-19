@@ -12,12 +12,16 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from gradprobe import GradProbe, MagnitudePruning, TinyMLP
+from gradprobe.logger import Logger, LogLevel
+
+# Initialize logger
+logger = Logger(program_name='test_pruner', level=LogLevel.INFO)
 
 
 def test_magnitude_pruning():
     """Test magnitude-based pruning strategy."""
-    print("\nTest 1: Magnitude Pruning Strategy")
-    print("-" * 50)
+    logger.info("\nTest 1: Magnitude Pruning Strategy")
+    logger.info("-" * 50)
 
     model = TinyMLP(input_dim=50, output_dim=5)
     strategy = MagnitudePruning()
@@ -30,23 +34,23 @@ def test_magnitude_pruning():
     total_selected = sum(mask.sum().item() for mask in masks.values())
 
     actual_sparsity = total_selected / total_params
-    print(f"Target sparsity: {sparsity:.2%}")
-    print(f"Actual sparsity: {actual_sparsity:.2%}")
-    print(f"Total parameters: {total_params}")
-    print(f"Selected for pruning: {total_selected}")
+    logger.info(f"Target sparsity: {sparsity:.2%}")
+    logger.info(f"Actual sparsity: {actual_sparsity:.2%}")
+    logger.info(f"Total parameters: {total_params}")
+    logger.info(f"Selected for pruning: {total_selected}")
 
     # Check that sparsity is approximately correct (within 5%)
     assert abs(actual_sparsity - sparsity) < 0.05, \
         f"Sparsity mismatch: expected ~{sparsity:.2%}, got {actual_sparsity:.2%}"
 
-    print("✓ Magnitude pruning test passed")
+    logger.info("✓ Magnitude pruning test passed")
     return True
 
 
 def test_gradprobe_basic():
     """Test basic GradProbe functionality."""
-    print("\nTest 2: GradProbe Basic Functionality")
-    print("-" * 50)
+    logger.info("\nTest 2: GradProbe Basic Functionality")
+    logger.info("-" * 50)
 
     # Create simple model and data
     model = TinyMLP(input_dim=20, output_dim=3)
@@ -61,7 +65,7 @@ def test_gradprobe_basic():
 
     # Count parameters before
     params_before = model.count_parameters()
-    print(f"Parameters before: {params_before['total']}")
+    logger.info(f"Parameters before: {params_before['total']}")
 
     # Prune with 40% sparsity
     sparsity = 0.4
@@ -75,24 +79,24 @@ def test_gradprobe_basic():
 
     # Check sparsity
     actual_sparsity = pruner.get_sparsity()
-    print(f"\nTarget sparsity: {sparsity:.2%}")
-    print(f"Actual sparsity: {actual_sparsity:.2%}")
+    logger.info(f"\nTarget sparsity: {sparsity:.2%}")
+    logger.info(f"Actual sparsity: {actual_sparsity:.2%}")
 
     # Verify that some weights are actually zero
     zero_count = sum((p.data == 0).sum().item() for p in model.parameters())
-    print(f"Zero weights: {zero_count}")
+    logger.info(f"Zero weights: {zero_count}")
 
     assert zero_count > 0, "No weights were pruned!"
     assert actual_sparsity > 0, "Sparsity is zero!"
 
-    print("✓ GradProbe basic test passed")
+    logger.info("✓ GradProbe basic test passed")
     return True
 
 
 def test_gradient_comparison():
     """Test that gradient comparison logic works."""
-    print("\nTest 3: Gradient Comparison Logic")
-    print("-" * 50)
+    logger.info("\nTest 3: Gradient Comparison Logic")
+    logger.info("-" * 50)
 
     model = TinyMLP(input_dim=30, output_dim=4)
     X = torch.randn(50, 30)
@@ -115,16 +119,16 @@ def test_gradient_comparison():
     # Verify masks are boolean tensors
     for name, mask in masks.items():
         assert mask.dtype == torch.bool, f"Mask for {name} is not boolean"
-        print(f"{name}: {mask.sum().item()} weights pruned out of {mask.numel()}")
+        logger.info(f"{name}: {mask.sum().item()} weights pruned out of {mask.numel()}")
 
-    print("✓ Gradient comparison test passed")
+    logger.info("✓ Gradient comparison test passed")
     return True
 
 
 def test_permanent_masking():
     """Test permanent masking functionality."""
-    print("\nTest 4: Permanent Masking")
-    print("-" * 50)
+    logger.info("\nTest 4: Permanent Masking")
+    logger.info("-" * 50)
 
     model = TinyMLP(input_dim=25, output_dim=3)
     X = torch.randn(40, 25)
@@ -173,22 +177,22 @@ def test_permanent_masking():
         stayed_zero = (zero_positions[name] == still_zero).all()
         if not stayed_zero:
             all_stay_zero = False
-            print(f"WARNING: {name} has pruned weights that changed")
+            logger.info(f"WARNING: {name} has pruned weights that changed")
 
     if all_stay_zero:
-        print("✓ All pruned weights remained zero after training step")
+        logger.info("✓ All pruned weights remained zero after training step")
     else:
-        print("✗ Some pruned weights changed (this may be expected without proper masking)")
+        logger.info("✗ Some pruned weights changed (this may be expected without proper masking)")
 
-    print("✓ Permanent masking test passed")
+    logger.info("✓ Permanent masking test passed")
     return True
 
 
 def run_all_tests():
     """Run all tests."""
-    print("="*70)
-    print("GradProbe Test Suite")
-    print("="*70)
+    logger.info("="*70)
+    logger.info("GradProbe Test Suite")
+    logger.info("="*70)
 
     tests = [
         test_magnitude_pruning,
@@ -205,14 +209,14 @@ def run_all_tests():
             if test():
                 passed += 1
         except Exception as e:
-            print(f"✗ Test failed with error: {e}")
+            logger.error(f"✗ Test failed with error: {e}")
             import traceback
             traceback.print_exc()
             failed += 1
 
-    print("\n" + "="*70)
-    print(f"Test Results: {passed} passed, {failed} failed")
-    print("="*70)
+    logger.info("\n" + "="*70)
+    logger.info(f"Test Results: {passed} passed, {failed} failed")
+    logger.info("="*70)
 
     return failed == 0
 

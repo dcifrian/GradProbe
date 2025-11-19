@@ -14,6 +14,10 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from gradprobe.strategies.wanda import WANDAPruning
 from gradprobe.strategies.wanda_optimized import WANDAPruningOptimized
+from gradprobe.logger import Logger, LogLevel
+
+# Initialize logger
+logger = Logger(program_name='benchmark_wanda_strategies', level=LogLevel.INFO)
 
 
 def get_memory_usage():
@@ -36,17 +40,17 @@ def create_dummy_dataloader(model, num_samples=10, seq_length=128):
 def compare_strategies(model, dataloader, sparsity, num_trials=3):
     """Compare current vs optimized WANDA strategy."""
 
-    print(f"\n{'='*70}")
-    print(f"Benchmarking WANDA Strategies")
-    print(f"{'='*70}")
-    print(f"Model: TinyStories-33M")
-    print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"Target sparsity: {sparsity:.1%}")
-    print(f"Dataloader: {len(dataloader)} batches for activation collection")
-    print(f"Trials: {num_trials}\n")
+    logger.info(f"\n{'='*70}")
+    logger.info(f"Benchmarking WANDA Strategies")
+    logger.info(f"{'='*70}")
+    logger.info(f"Model: TinyStories-33M")
+    logger.info(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+    logger.info(f"Target sparsity: {sparsity:.1%}")
+    logger.info(f"Dataloader: {len(dataloader)} batches for activation collection")
+    logger.info(f"Trials: {num_trials}\n")
 
     # Test current strategy
-    print("Testing CURRENT WANDAPruning...")
+    logger.info("Testing CURRENT WANDAPruning...")
     current_times = []
     current_mems = []
     current_masks = None
@@ -73,12 +77,12 @@ def compare_strategies(model, dataloader, sparsity, num_trials=3):
         if i == 0:
             current_masks = masks
 
-        print(f"  Trial {i+1}: {time_taken:.3f}s, {mem_used*1024:.1f}MB")
+        logger.memory(f"  Trial {i+1}: {time_taken:.3f}s, {mem_used*1024:.1f}MB")
 
-    print()
+    logger.info()
 
     # Test optimized strategy
-    print("Testing OPTIMIZED WANDAPruningOptimized...")
+    logger.info("Testing OPTIMIZED WANDAPruningOptimized...")
     opt_times = []
     opt_mems = []
     opt_masks = None
@@ -105,7 +109,7 @@ def compare_strategies(model, dataloader, sparsity, num_trials=3):
         if i == 0:
             opt_masks = masks
 
-        print(f"  Trial {i+1}: {time_taken:.3f}s, {mem_used*1024:.1f}MB")
+        logger.memory(f"  Trial {i+1}: {time_taken:.3f}s, {mem_used*1024:.1f}MB")
 
     # Calculate sparsity and agreement
     total_params = sum(p.numel() for p in model.parameters())
@@ -122,38 +126,38 @@ def compare_strategies(model, dataloader, sparsity, num_trials=3):
 
     agreement = total_agree / total_weights if total_weights > 0 else 1.0
 
-    print()
-    print(f"{'='*70}")
-    print("RESULTS")
-    print(f"{'='*70}")
+    logger.info()
+    logger.info(f"{'='*70}")
+    logger.info("RESULTS")
+    logger.info(f"{'='*70}")
 
-    print(f"\nSparsity achieved:")
-    print(f"  Target:     {sparsity:.4%}")
-    print(f"  Current:    {current_sparsity:.4%} (error: {abs(current_sparsity - sparsity):.4%})")
-    print(f"  Optimized:  {opt_sparsity:.4%} (error: {abs(opt_sparsity - sparsity):.4%})")
+    logger.info(f"\nSparsity achieved:")
+    logger.info(f"  Target:     {sparsity:.4%}")
+    logger.info(f"  Current:    {current_sparsity:.4%} (error: {abs(current_sparsity - sparsity):.4%})")
+    logger.info(f"  Optimized:  {opt_sparsity:.4%} (error: {abs(opt_sparsity - sparsity):.4%})")
 
-    print(f"\nMask agreement: {agreement:.4%}")
+    logger.info(f"\nMask agreement: {agreement:.4%}")
 
-    print(f"\nTime (average over {num_trials} trials):")
+    logger.info(f"\nTime (average over {num_trials} trials):")
     avg_current_time = sum(current_times) / len(current_times)
     avg_opt_time = sum(opt_times) / len(opt_times)
-    print(f"  Current:    {avg_current_time:.3f}s")
-    print(f"  Optimized:  {avg_opt_time:.3f}s")
+    logger.info(f"  Current:    {avg_current_time:.3f}s")
+    logger.info(f"  Optimized:  {avg_opt_time:.3f}s")
     speedup = avg_current_time / avg_opt_time if avg_opt_time > 0 else 0
-    print(f"  Speedup:    {speedup:.2f}x {'FASTER' if speedup > 1 else 'SLOWER'}")
+    logger.info(f"  Speedup:    {speedup:.2f}x {'FASTER' if speedup > 1 else 'SLOWER'}")
 
-    print(f"\nMemory (average over {num_trials} trials):")
+    logger.info(f"\nMemory (average over {num_trials} trials):")
     avg_current_mem = sum(current_mems) / len(current_mems)
     avg_opt_mem = sum(opt_mems) / len(opt_mems)
-    print(f"  Current:    {avg_current_mem*1024:.1f}MB")
-    print(f"  Optimized:  {avg_opt_mem*1024:.1f}MB")
+    logger.memory(f"  Current:    {avg_current_mem*1024:.1f}MB")
+    logger.memory(f"  Optimized:  {avg_opt_mem*1024:.1f}MB")
     if avg_current_mem > 0:
         mem_savings = (avg_current_mem - avg_opt_mem) / avg_current_mem * 100
-        print(f"  Savings:    {mem_savings:.1f}%")
+        logger.info(f"  Savings:    {mem_savings:.1f}%")
     else:
         mem_savings = 0
 
-    print(f"\n{'='*70}\n")
+    logger.info(f"\n{'='*70}\n")
 
     return {
         'sparsity': sparsity,
@@ -166,13 +170,13 @@ def compare_strategies(model, dataloader, sparsity, num_trials=3):
 
 
 if __name__ == "__main__":
-    print("Loading TinyStories-33M model...")
+    logger.info("Loading TinyStories-33M model...")
     model = AutoModelForCausalLM.from_pretrained("roneneldan/TinyStories-33M")
-    print(f"Model loaded successfully\n")
+    logger.info(f"Model loaded successfully\n")
 
-    print("Creating dummy dataloader for activation collection...")
+    logger.info("Creating dummy dataloader for activation collection...")
     dataloader = create_dummy_dataloader(model, num_samples=10, seq_length=128)
-    print(f"Dataloader created: {len(dataloader)} batches\n")
+    logger.info(f"Dataloader created: {len(dataloader)} batches\n")
 
     sparsities = [0.1, 0.3, 0.5]
     results = []
@@ -182,33 +186,33 @@ if __name__ == "__main__":
         results.append(result)
 
     # Summary
-    print(f"\n{'#'*70}")
-    print("# SUMMARY")
-    print(f"{'#'*70}\n")
+    logger.info(f"\n{'#'*70}")
+    logger.info("# SUMMARY")
+    logger.info(f"{'#'*70}\n")
 
-    print(f"{'Sparsity':<12} {'Current Time':<15} {'Opt Time':<15} {'Speedup':<12} {'Mem Savings':<15} {'Agreement':<12}")
-    print("-" * 90)
+    logger.info(f"{'Sparsity':<12} {'Current Time':<15} {'Opt Time':<15} {'Speedup':<12} {'Mem Savings':<15} {'Agreement':<12}")
+    logger.info("-" * 90)
     for r in results:
-        print(f"{r['sparsity']:<12.1%} {r['current_time']:<15.3f}s {r['opt_time']:<15.3f}s "
+        logger.info(f"{r['sparsity']:<12.1%} {r['current_time']:<15.3f}s {r['opt_time']:<15.3f}s "
               f"{r['speedup']:<12.2f}x {r['mem_savings']:<15.1f}% {r['agreement']:<12.4%}")
 
     avg_speedup = sum(r['speedup'] for r in results) / len(results)
     avg_mem_savings = sum(r['mem_savings'] for r in results) / len(results)
     avg_agreement = sum(r['agreement'] for r in results) / len(results)
 
-    print("\n" + "="*90)
-    print("OVERALL AVERAGES:")
-    print(f"  Speedup:        {avg_speedup:.2f}x")
-    print(f"  Memory savings: {avg_mem_savings:.1f}%")
-    print(f"  Mask agreement: {avg_agreement:.4%}")
-    print("="*90)
+    logger.info("\n" + "="*90)
+    logger.info("OVERALL AVERAGES:")
+    logger.info(f"  Speedup:        {avg_speedup:.2f}x")
+    logger.info(f"  Memory savings: {avg_mem_savings:.1f}%")
+    logger.info(f"  Mask agreement: {avg_agreement:.4%}")
+    logger.info("="*90)
 
     if avg_speedup > 3.0 and avg_agreement > 0.99:
-        print("\n✅ OPTIMIZATION HIGHLY SUCCESSFUL!")
-        print("   Ready to replace current WANDA implementation.")
+        logger.info("\n✅ OPTIMIZATION HIGHLY SUCCESSFUL!")
+        logger.info("   Ready to replace current WANDA implementation.")
     elif avg_speedup > 1.5 and avg_agreement > 0.98:
-        print("\n✅ OPTIMIZATION SUCCESSFUL!")
-        print("   Significant improvement, consider replacing current implementation.")
+        logger.info("\n✅ OPTIMIZATION SUCCESSFUL!")
+        logger.info("   Significant improvement, consider replacing current implementation.")
     else:
-        print("\n⚠️  OPTIMIZATION NEEDS MORE WORK")
-        print("   May not be worth replacing current implementation.")
+        logger.info("\n⚠️  OPTIMIZATION NEEDS MORE WORK")
+        logger.info("   May not be worth replacing current implementation.")
