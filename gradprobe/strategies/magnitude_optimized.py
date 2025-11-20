@@ -42,6 +42,15 @@ class MagnitudePruningOptimized(PruningStrategy):
     into one large tensor, saving 80-98% memory and providing 5-6x speedup.
     """
 
+    def __init__(self, device: str = 'cpu'):
+        """
+        Initialize Magnitude pruning strategy.
+
+        Args:
+            device: Device to use for histogram computations ('cpu', 'cuda', or 'auto')
+        """
+        self.device = device if device != 'auto' else ('cuda' if torch.cuda.is_available() else 'cpu')
+
     def select_weights_to_prune(
         self,
         model: nn.Module,
@@ -99,7 +108,7 @@ class MagnitudePruningOptimized(PruningStrategy):
 
         for name, param in param_list:
             # Compute importance (magnitude)
-            importance = param.data.abs().cpu()
+            importance = param.data.abs().to(self.device)
             importance_cache.append((name, importance))
 
         # Find global min/max first
@@ -123,7 +132,7 @@ class MagnitudePruningOptimized(PruningStrategy):
         # Pass 2: If bin is heavily populated, zoom in with fine histogram
         num_bins_coarse = 1000
         num_bins_fine = 10000
-        histogram = torch.zeros(num_bins_coarse)
+        histogram = torch.zeros(num_bins_coarse, device=self.device)
         eps = (max_val - min_val) * 1e-6 if max_val > min_val else 1e-6
         hist_min = min_val - eps
         hist_max = max_val + eps
@@ -172,7 +181,7 @@ class MagnitudePruningOptimized(PruningStrategy):
 
             log_memory(f"Pass 2: Zooming into [{fine_min:.6f}, {fine_max:.6f}] with {num_bins_fine} bins, fine_target={fine_target:.0f}")
 
-            histogram_fine = torch.zeros(num_bins_fine)
+            histogram_fine = torch.zeros(num_bins_fine, device=self.device)
             for idx, (name, importance) in enumerate(importance_cache):
                 importance_f32 = importance.float()
                 hist = torch.histc(importance_f32, bins=num_bins_fine, min=fine_min, max=fine_max)
@@ -345,7 +354,7 @@ class MagnitudePruningOptimized(PruningStrategy):
             log_memory(f"Layer {layer_idx+1}/{len(param_list)}: {name}")
 
             # Compute magnitude importance for this layer
-            importance = param.data.abs().cpu()
+            importance = param.data.abs().to(self.device)
 
             # Find threshold for this layer using histogram-based approach
             threshold = self._find_layer_threshold_histogram(
