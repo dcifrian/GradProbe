@@ -1876,7 +1876,7 @@ class GradProbe:
         max_accuracy_drop: float = 1.0,
         num_batches: int = 1,
         reduction_factor: float = 0.1,
-        gradient_threshold: float = 0.0,
+        gradient_threshold: Union[float, List[float], Dict[str, float], Tuple[str, float]] = 0.0,
         layerwise: bool = False,
         verbose: bool = True,
         compare_baseline: bool = False,
@@ -1899,8 +1899,12 @@ class GradProbe:
             max_accuracy_drop: Stop if accuracy drops by this much in percentage points (default: 1.0 = 1%)
             num_batches: Number of batches for gradient computation
             reduction_factor: Factor to reduce tentative weights by
-            gradient_threshold: Relative gradient increase threshold
-            layerwise: Whether to use layer-by-layer pruning
+            gradient_threshold: Relative gradient increase threshold (for layerwise pruning, can be adaptive). Can be:
+                - float: Single threshold for all layers
+                - List[float]: Per-layer thresholds (must match number of layers)
+                - Dict[str, float]: Mapping of layer names to thresholds
+                - Tuple[str, float]: ("adaptive", base_threshold) for adaptive scaling
+            layerwise: Whether to use layer-by-layer pruning (required for adaptive thresholds)
             verbose: Whether to print progress
             compare_baseline: If True, compare with strategy-only pruning at each step
             tune_threshold_on_fail: If True, when accuracy target is missed, fine-tune
