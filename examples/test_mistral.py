@@ -309,16 +309,59 @@ generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
 logger.info(generated_text)
 logger.info("="*70)
 
-# Save the pruned model
+# Save the pruned models
 logger.info("\n" + "="*70)
-logger.info("SAVING PRUNED MODEL")
+logger.info("SAVING PRUNED MODELS")
 logger.info("="*70)
-output_dir = "pruned_models/mistral_wanda_pruned"
+
+# Helper function to format numbers for filenames
+def format_for_filename(num):
+    """Format number by replacing '.' with '_'"""
+    return f"{num:.2f}".replace('.', '_')
+
+# Save most sparse checkpoint
+final_sparsity = results['final_sparsity']
+final_perplexity = eval_perplexity(model)
+sparsity_str = format_for_filename(final_sparsity * 100)
+perplexity_str = format_for_filename(final_perplexity)
+output_dir = f"pruned_models/mistral_wanda_sparse_s{sparsity_str}_p{perplexity_str}"
 os.makedirs(output_dir, exist_ok=True)
 model.save_pretrained(output_dir)
 tokenizer.save_pretrained(output_dir)
-logger.info(f"Pruned model saved to: {output_dir}")
-logger.info(f"Sparsity: {results['final_sparsity']:.1%}")
+logger.info(f"Most sparse checkpoint saved to: {output_dir}")
+logger.info(f"  Sparsity: {final_sparsity:.2%}, Perplexity: {final_perplexity:.2f}")
+
+# Save best accuracy checkpoint if different
+if 'best_acc_masks' in results and results['best_acc_masks'] is not None:
+    best_acc_sparsity = results['best_acc_sparsity']
+    best_acc_accuracy = results['best_acc_accuracy']
+
+    # Check if it's different from the final checkpoint
+    if best_acc_sparsity != final_sparsity or abs(best_acc_accuracy - results['final_accuracy']) > 0.01:
+        # Apply best accuracy masks
+        model.load_state_dict(saved_state)
+        for name, param in model.named_parameters():
+            if name in results['best_acc_masks']:
+                mask = results['best_acc_masks'][name].to(param.device)
+                param.data[mask] = 0
+
+        best_perplexity = eval_perplexity(model)
+        sparsity_str = format_for_filename(best_acc_sparsity * 100)
+        perplexity_str = format_for_filename(best_perplexity)
+        output_dir = f"pruned_models/mistral_wanda_bestacc_s{sparsity_str}_p{perplexity_str}"
+        os.makedirs(output_dir, exist_ok=True)
+        model.save_pretrained(output_dir)
+        tokenizer.save_pretrained(output_dir)
+        logger.info(f"Best accuracy checkpoint saved to: {output_dir}")
+        logger.info(f"  Sparsity: {best_acc_sparsity:.2%}, Perplexity: {best_perplexity:.2f}")
+
+        # Restore most sparse checkpoint to model
+        model.load_state_dict(saved_state)
+        for name, param in model.named_parameters():
+            if name in results['final_masks']:
+                mask = results['final_masks'][name].to(param.device)
+                param.data[mask] = 0
+
 logger.info("="*70)
 
 logger.info("\n" + "="*70)
