@@ -1720,7 +1720,7 @@ class GradProbe:
 
     def _apply_threshold_two_steps(
         self,
-        threshold: float,
+        threshold: Union[float, List[float], Dict[str, float], Tuple[str, float]],
         prev_step_data: Dict,
         current_sparsity: float,
         dataloader: torch.utils.data.DataLoader,
@@ -1773,7 +1773,14 @@ class GradProbe:
                 param.data[mask] = 0
 
         if verbose:
-            get_logger().debug(f"        [Two-step] Re-pruning step {prev_step_data['sparsity']:.0%} with threshold {threshold:.2f}...")
+            if isinstance(threshold, tuple) and len(threshold) == 2 and threshold[0] == "adaptive":
+                get_logger().debug(f"        [Two-step] Re-pruning step {prev_step_data['sparsity']:.0%} with threshold (adaptive) {threshold[1]:.2f}...")
+            elif isinstance(threshold, dict):
+                get_logger().debug(f"        [Two-step] Re-pruning step {prev_step_data['sparsity']:.0%} with per-layer thresholds...")
+            elif isinstance(threshold, (list, tuple)):
+                get_logger().debug(f"        [Two-step] Re-pruning step {prev_step_data['sparsity']:.0%} with per-layer thresholds...")
+            else:
+                get_logger().debug(f"        [Two-step] Re-pruning step {prev_step_data['sparsity']:.0%} with threshold {threshold:.2f}...")
 
         # Re-run pruning for previous step with new threshold
         prev_sparsity = prev_step_data['sparsity']
@@ -1812,7 +1819,14 @@ class GradProbe:
                 param.data[mask] = 0
 
         if verbose:
-            get_logger().debug(f"        [Two-step] Re-pruning step {current_sparsity:.0%} with threshold {threshold:.2f}...")
+            if isinstance(threshold, tuple) and len(threshold) == 2 and threshold[0] == "adaptive":
+                get_logger().debug(f"        [Two-step] Re-pruning step {current_sparsity:.0%} with threshold (adaptive) {threshold[1]:.2f}...")
+            elif isinstance(threshold, dict):
+                get_logger().debug(f"        [Two-step] Re-pruning step {current_sparsity:.0%} with per-layer thresholds...")
+            elif isinstance(threshold, (list, tuple)):
+                get_logger().debug(f"        [Two-step] Re-pruning step {current_sparsity:.0%} with per-layer thresholds...")
+            else:
+                get_logger().debug(f"        [Two-step] Re-pruning step {current_sparsity:.0%} with threshold {threshold:.2f}...")
 
         # Re-run pruning for current step with new threshold
         if layerwise:
@@ -2225,7 +2239,13 @@ class GradProbe:
                 if tuned_result is not None:
                     # Found a better threshold that meets requirements
                     if verbose:
-                        get_logger().info(f"  ✓ Tuning successful! Using threshold {tuned_result['threshold']:.2f}")
+                        tuned_thresh = tuned_result['threshold']
+                        if isinstance(tuned_thresh, tuple) and len(tuned_thresh) == 2 and tuned_thresh[0] == "adaptive":
+                            get_logger().info(f"  ✓ Tuning successful! Using threshold (adaptive) {tuned_thresh[1]:.2f}")
+                        elif isinstance(tuned_thresh, (dict, list)):
+                            get_logger().info(f"  ✓ Tuning successful! Using per-layer thresholds")
+                        else:
+                            get_logger().info(f"  ✓ Tuning successful! Using threshold {tuned_thresh:.2f}")
                         get_logger().info(f"  ✓ Achieved {tuned_result['sparsity']:.2%} sparsity at {tuned_result['accuracy']:.2f}% accuracy")
 
                     best_masks = tuned_result['masks']
