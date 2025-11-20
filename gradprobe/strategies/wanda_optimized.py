@@ -43,16 +43,18 @@ class WANDAPruningOptimized(PruningStrategy):
     into one large tensor, saving memory and providing speedup.
     """
 
-    def __init__(self, dataloader: torch.utils.data.DataLoader, num_batches: int = 10):
+    def __init__(self, dataloader: torch.utils.data.DataLoader, num_batches: int = 10, device: str = 'cpu'):
         """
         Initialize WANDA pruning strategy.
 
         Args:
             dataloader: DataLoader to sample activations from
             num_batches: Number of batches to use for activation computation
+            device: Device to use for histogram computations ('cpu', 'cuda', or 'auto')
         """
         self.dataloader = dataloader
         self.num_batches = num_batches
+        self.device = device if device != 'auto' else ('cuda' if torch.cuda.is_available() else 'cpu')
         self._cached_activation_norms = None  # Cache activations to avoid recomputation
         self._cached_layer_histograms = {}  # Cache histograms per layer for reuse across sparsity targets
 
@@ -131,15 +133,15 @@ class WANDAPruningOptimized(PruningStrategy):
         for name, param in param_list:
             # Compute WANDA importance: |W| * ||X||
             if name in activation_norms:
-                act_norm = activation_norms[name].cpu()
+                act_norm = activation_norms[name].to(self.device)
                 if len(param.shape) == 2:
                     act_norm_expanded = act_norm.unsqueeze(0)
-                    importance = param.data.abs().cpu() * act_norm_expanded
+                    importance = param.data.abs().to(self.device) * act_norm_expanded
                 else:
-                    importance = param.data.abs().cpu()
+                    importance = param.data.abs().to(self.device)
             else:
                 # No activation data, use magnitude only
-                importance = param.data.abs().cpu()
+                importance = param.data.abs().to(self.device)
 
             importance_cache.append((name, importance))
 
@@ -181,7 +183,7 @@ class WANDAPruningOptimized(PruningStrategy):
 
             # Build histogram
             log_memory(f"Building histogram for parameter set: {sorted(list(param_names_key))[:3]}...")
-            histogram = torch.zeros(num_bins_coarse)
+            histogram = torch.zeros(num_bins_coarse, device=self.device)
             eps = (max_val - min_val) * 1e-6 if max_val > min_val else 1e-6
             hist_min = min_val - eps
             hist_max = max_val + eps
@@ -238,7 +240,7 @@ class WANDAPruningOptimized(PruningStrategy):
 
             log_memory(f"Pass 2: Zooming into [{fine_min:.6f}, {fine_max:.6f}] with {num_bins_fine} bins, fine_target={fine_target:.0f}")
 
-            histogram_fine = torch.zeros(num_bins_fine)
+            histogram_fine = torch.zeros(num_bins_fine, device=self.device)
             for idx, (name, importance) in enumerate(importance_cache):
                 importance_f32 = importance.float()
                 hist = torch.histc(importance_f32, bins=num_bins_fine, min=fine_min, max=fine_max)
@@ -312,7 +314,7 @@ class WANDAPruningOptimized(PruningStrategy):
 
             log_memory(f"Pass 2: Zooming into [{fine_min:.6f}, {fine_max:.6f}] with {num_bins_fine} bins (low density), fine_target={fine_target:.0f}")
 
-            histogram_fine = torch.zeros(num_bins_fine)
+            histogram_fine = torch.zeros(num_bins_fine, device=self.device)
             for idx, (name, importance) in enumerate(importance_cache):
                 importance_f32 = importance.float()
                 hist = torch.histc(importance_f32, bins=num_bins_fine, min=fine_min, max=fine_max)
@@ -845,15 +847,15 @@ class WANDAPruningOptimized(PruningStrategy):
 
             # Compute WANDA importance for this layer
             if name in activation_norms:
-                act_norm = activation_norms[name].cpu()
+                act_norm = activation_norms[name].to(self.device)
                 if len(param.shape) == 2:
                     act_norm_expanded = act_norm.unsqueeze(0)
-                    importance = param.data.abs().cpu() * act_norm_expanded
+                    importance = param.data.abs().to(self.device) * act_norm_expanded
                 else:
-                    importance = param.data.abs().cpu()
+                    importance = param.data.abs().to(self.device)
             else:
                 # No activation data, use magnitude only
-                importance = param.data.abs().cpu()
+                importance = param.data.abs().to(self.device)
 
             # Find threshold for this layer using histogram-based approach
             threshold = self._find_layer_threshold_histogram(
