@@ -5,14 +5,50 @@ This module implements the main GradProbe algorithm, which uses gradient
 information to make intelligent pruning decisions.
 """
 
-from typing import Dict, Optional, Callable, Tuple
+from typing import Dict, Optional, Callable, Tuple, Union, List
 import torch
 import torch.nn as nn
 from copy import deepcopy
 import gc
+import math
 
 from .strategies.base import PruningStrategy
 from .logger import get_logger
+
+
+def compute_adaptive_gradient_thresholds(
+    model: nn.Module,
+    base_threshold: float,
+    reference_layer_size: int = 38597376  # Largest layer in TinyStories-33M (wte.weight)
+) -> Dict[str, float]:
+    """
+    Compute adaptive per-layer gradient thresholds.
+
+    Formula: threshold_for_layer = base_threshold * sqrt(layer_size) / sqrt(reference_layer_size)
+
+    Larger layers get proportionally larger thresholds (more lenient),
+    smaller layers get proportionally smaller thresholds (more strict).
+
+    Args:
+        model: The neural network model
+        base_threshold: Base threshold value (1.0 is good for TinyStories)
+        reference_layer_size: Size of reference layer (default: TinyStories wte.weight = 38,597,376)
+
+    Returns:
+        Dictionary mapping parameter names to adaptive thresholds
+    """
+    thresholds = {}
+    sqrt_ref = math.sqrt(reference_layer_size)
+
+    for name, param in model.named_parameters():
+        if param.requires_grad and len(param.shape) >= 2:  # Weight matrices only
+            layer_size = param.numel()
+            # Adaptive scaling: sqrt(layer_size) / sqrt(reference_size)
+            threshold = base_threshold * (math.sqrt(layer_size) / sqrt_ref)
+            thresholds[name] = threshold
+            get_logger().debug(f"Adaptive threshold for {name} (size={layer_size}): {threshold:.4f}")
+
+    return thresholds
 
 
 class GradProbe:
@@ -1146,7 +1182,7 @@ class GradProbe:
         sparsity: float,
         num_batches: int = 1,
         reduction_factor: float = 0.1,
-        gradient_threshold: float = 0.0,
+        gradient_threshold: Union[float, List[float], Dict[str, float], Tuple[str, float]] = 0.0,
         verbose: bool = True,
         layer_order: str = "reverse"
     ) -> Dict[str, torch.Tensor]:
@@ -1162,7 +1198,11 @@ class GradProbe:
             sparsity: Target sparsity level per layer
             num_batches: Number of batches for gradient computation
             reduction_factor: Factor to reduce tentative weights by
-            gradient_threshold: Relative gradient increase threshold
+            gradient_threshold: Relative gradient increase threshold. Can be:
+                - float: Single threshold for all layers
+                - List[float]: Per-layer thresholds (must match number of layers)
+                - Dict[str, float]: Mapping of layer names to thresholds
+                - Tuple[str, float]: ("adaptive", base_threshold) for adaptive scaling
             verbose: Whether to print progress
             layer_order: Order to prune layers:
                         "reverse" - output to input (default)
@@ -1172,12 +1212,38 @@ class GradProbe:
         Returns:
             Dictionary mapping parameter names to pruning masks
         """
+        # Process gradient_threshold into per-layer dictionary
+        if isinstance(gradient_threshold, tuple) and len(gradient_threshold) == 2 and gradient_threshold[0] == "adaptive":
+            # Adaptive thresholds
+            base_threshold = gradient_threshold[1]
+            layer_thresholds = compute_adaptive_gradient_thresholds(self.model, base_threshold)
+            if verbose:
+                get_logger().info(f"Using adaptive gradient thresholds (base={base_threshold:.2f})")
+        elif isinstance(gradient_threshold, dict):
+            # Already a dictionary
+            layer_thresholds = gradient_threshold
+        elif isinstance(gradient_threshold, (list, tuple)):
+            # List of thresholds - will be mapped to layers after ordering
+            layer_thresholds = None
+            threshold_list = list(gradient_threshold)
+        else:
+            # Single threshold for all layers
+            layer_thresholds = None
+            single_threshold = float(gradient_threshold)
+
         if verbose:
             get_logger().info("="*70)
             get_logger().info("LAYER-BY-LAYER PRUNING")
             get_logger().info("="*70)
             get_logger().info(f"Target sparsity per layer: {sparsity:.2%}")
-            get_logger().info(f"Gradient threshold: {gradient_threshold:.2%}")
+            if isinstance(gradient_threshold, tuple) and len(gradient_threshold) == 2 and gradient_threshold[0] == "adaptive":
+                get_logger().info(f"Gradient threshold: adaptive (base={gradient_threshold[1]:.2f})")
+            elif isinstance(gradient_threshold, dict):
+                get_logger().info(f"Gradient threshold: per-layer dictionary")
+            elif isinstance(gradient_threshold, (list, tuple)):
+                get_logger().info(f"Gradient threshold: per-layer list")
+            else:
+                get_logger().info(f"Gradient threshold: {gradient_threshold:.2%}")
             get_logger().info(f"Layer order: {layer_order}")
             get_logger().info("")
 
@@ -1202,10 +1268,20 @@ class GradProbe:
         else:
             raise ValueError(f"Unknown layer_order: {layer_order}. Must be 'reverse', 'size', or 'forward'")
 
+        # Map list of thresholds to layers after ordering
+        if isinstance(gradient_threshold, (list, tuple)) and not (isinstance(gradient_threshold, tuple) and len(gradient_threshold) == 2 and gradient_threshold[0] == "adaptive"):
+            if len(threshold_list) != len(layer_params):
+                raise ValueError(f"Length of gradient_threshold list ({len(threshold_list)}) must match number of layers ({len(layer_params)})")
+            layer_thresholds = {name: threshold_list[i] for i, (name, param) in enumerate(layer_params)}
+
         if verbose:
             get_logger().info(f"Pruning {len(layer_params)} layers in {order_desc}:")
             for i, (name, param) in enumerate(layer_params):
-                get_logger().info(f"  {i+1}. {name} ({param.numel():,} weights)")
+                if layer_thresholds:
+                    thresh_str = f" (threshold={layer_thresholds[name]:.4f})"
+                else:
+                    thresh_str = f" (threshold={single_threshold:.4f})"
+                get_logger().info(f"  {i+1}. {name} ({param.numel():,} weights){thresh_str}")
             get_logger().info("")
 
         # Save original model state
@@ -1271,6 +1347,12 @@ class GradProbe:
             tentative_mask_for_layer = {layer_name: full_strategy_masks[layer_name]}
 
             # Apply gradient filtering for this layer only
+            # Use per-layer threshold if available
+            if layer_thresholds:
+                current_threshold = layer_thresholds[layer_name]
+            else:
+                current_threshold = single_threshold
+
             layer_masks = self._apply_gradient_filtering_single_layer(
                 layer_name=layer_name,
                 tentative_masks=tentative_mask_for_layer,
@@ -1278,7 +1360,7 @@ class GradProbe:
                 loss_fn=loss_fn,
                 num_batches=num_batches,
                 reduction_factor=reduction_factor,
-                gradient_threshold=gradient_threshold
+                gradient_threshold=current_threshold
             )
 
             # Store masks for this layer
