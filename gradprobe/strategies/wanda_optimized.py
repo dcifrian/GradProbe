@@ -166,26 +166,14 @@ class WANDAPruningOptimized(PruningStrategy):
         num_bins_fine = 10000
 
         # Check if we have a cached histogram for this set of parameters
-        # and if it covers the current value range (with 5% margin)
-        use_cached = False
         if param_names_key in self._cached_layer_histograms:
+            log_memory(f"Using cached histogram for parameter set: {sorted(list(param_names_key))[:3]}...")
             cached = self._cached_layer_histograms[param_names_key]
-            cached_min = cached['hist_min']
-            cached_max = cached['hist_max']
-
-            # Check if cached range covers current range (with 5% margin for safety)
-            margin = (max_val - min_val) * 0.05
-            if cached_min <= (min_val - margin) and cached_max >= (max_val + margin):
-                log_memory(f"Using cached histogram for parameter set: {sorted(list(param_names_key))[:3]}...")
-                histogram = cached['histogram']
-                hist_min = cached_min
-                hist_max = cached_max
-                num_bins_coarse = len(histogram)
-                use_cached = True
-            else:
-                log_memory(f"Cached histogram range [{cached_min:.6f}, {cached_max:.6f}] doesn't cover current range [{min_val:.6f}, {max_val:.6f}], rebuilding...")
-
-        if not use_cached:
+            histogram = cached['histogram']
+            hist_min = cached['hist_min']
+            hist_max = cached['hist_max']
+            num_bins_coarse = len(histogram)
+        else:
             # Build histogram to estimate initial threshold
             # Use two-pass approach for bimodal distributions:
             # Pass 1: Coarse histogram to find which region target is in
