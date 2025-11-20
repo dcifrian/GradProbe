@@ -124,7 +124,7 @@ class WANDAPruningOptimized(PruningStrategy):
                     masks[name] = torch.zeros(param.shape, dtype=torch.bool, device='cpu')
             return masks
 
-        # Pass 1: Compute global statistics and build histogram for initial threshold
+        # Pass 1: Compute global statistics
         log_memory("Computing global statistics")
         importance_cache = []
 
@@ -158,24 +158,59 @@ class WANDAPruningOptimized(PruningStrategy):
         zero_count = sum((imp == 0).sum().item() for _, imp in importance_cache)
         log_memory(f"Importance dtype: {first_dtype}, zeros: {zero_count}/{total_count} ({zero_count/total_count*100:.1f}%)")
 
-        # Build histogram to estimate initial threshold
-        # Use two-pass approach for bimodal distributions:
-        # Pass 1: Coarse histogram to find which region target is in
-        # Pass 2: If bin is heavily populated, zoom in with fine histogram
+        # Create cache key for this set of parameters (for layerwise pruning, each layer gets its own cache)
+        param_names_key = frozenset(name for name, _ in param_list)
+
+        # Define bin counts for histogram approach
         num_bins_coarse = 1000
         num_bins_fine = 10000
 
-        # Build histogram from scratch
-        histogram = torch.zeros(num_bins_coarse)
-        eps = (max_val - min_val) * 1e-6 if max_val > min_val else 1e-6
-        hist_min = min_val - eps
-        hist_max = max_val + eps
+        # Check if we have a cached histogram for this set of parameters
+        # and if it covers the current value range (with 5% margin)
+        use_cached = False
+        if param_names_key in self._cached_layer_histograms:
+            cached = self._cached_layer_histograms[param_names_key]
+            cached_min = cached['hist_min']
+            cached_max = cached['hist_max']
 
-        log_memory(f"Pass 1: Coarse histogram with {num_bins_coarse} bins, range=[{hist_min:.6f}, {hist_max:.6f}]")
-        for idx, (name, importance) in enumerate(importance_cache):
-            importance_f32 = importance.float()
-            hist = torch.histc(importance_f32, bins=num_bins_coarse, min=hist_min, max=hist_max)
-            histogram += hist
+            # Check if cached range covers current range (with 5% margin for safety)
+            margin = (max_val - min_val) * 0.05
+            if cached_min <= (min_val - margin) and cached_max >= (max_val + margin):
+                log_memory(f"Using cached histogram for parameter set: {sorted(list(param_names_key))[:3]}...")
+                histogram = cached['histogram']
+                hist_min = cached_min
+                hist_max = cached_max
+                num_bins_coarse = len(histogram)
+                use_cached = True
+            else:
+                log_memory(f"Cached histogram range [{cached_min:.6f}, {cached_max:.6f}] doesn't cover current range [{min_val:.6f}, {max_val:.6f}], rebuilding...")
+
+        if not use_cached:
+            # Build histogram to estimate initial threshold
+            # Use two-pass approach for bimodal distributions:
+            # Pass 1: Coarse histogram to find which region target is in
+            # Pass 2: If bin is heavily populated, zoom in with fine histogram
+
+            # Build histogram
+            log_memory(f"Building histogram for parameter set: {sorted(list(param_names_key))[:3]}...")
+            histogram = torch.zeros(num_bins_coarse)
+            eps = (max_val - min_val) * 1e-6 if max_val > min_val else 1e-6
+            hist_min = min_val - eps
+            hist_max = max_val + eps
+
+            log_memory(f"Pass 1: Coarse histogram with {num_bins_coarse} bins, range=[{hist_min:.6f}, {hist_max:.6f}]")
+            for idx, (name, importance) in enumerate(importance_cache):
+                importance_f32 = importance.float()
+                hist = torch.histc(importance_f32, bins=num_bins_coarse, min=hist_min, max=hist_max)
+                histogram += hist
+
+            # Cache the histogram for this parameter set
+            self._cached_layer_histograms[param_names_key] = {
+                'histogram': histogram,
+                'hist_min': hist_min,
+                'hist_max': hist_max
+            }
+            log_memory(f"Cached histogram for parameter set")
 
         # Find which bin contains the target percentile
         cumsum = histogram.cumsum(0)
