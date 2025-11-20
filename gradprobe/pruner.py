@@ -16,6 +16,18 @@ from .strategies.base import PruningStrategy
 from .logger import get_logger
 
 
+def _is_nonzero_threshold(gradient_threshold: Union[float, List[float], Dict[str, float], Tuple[str, float]]) -> bool:
+    """Check if gradient_threshold is effectively non-zero (for tuning eligibility)."""
+    if isinstance(gradient_threshold, tuple) and len(gradient_threshold) == 2 and gradient_threshold[0] == "adaptive":
+        return gradient_threshold[1] > 0
+    elif isinstance(gradient_threshold, dict):
+        return any(v > 0 for v in gradient_threshold.values())
+    elif isinstance(gradient_threshold, (list, tuple)):
+        return any(v > 0 for v in gradient_threshold)
+    else:
+        return float(gradient_threshold) > 0
+
+
 def compute_adaptive_gradient_thresholds(
     model: nn.Module,
     base_threshold: float,
@@ -2131,7 +2143,7 @@ class GradProbe:
 
                 # Try to fine-tune gradient threshold to squeeze out more sparsity
                 tuned_result = None
-                if tune_threshold_on_fail and gradient_threshold > 0:
+                if tune_threshold_on_fail and _is_nonzero_threshold(gradient_threshold):
                     # Check if we have cached gradients and masks
                     if (hasattr(self, '_cached_original_gradients') and
                         hasattr(self, '_cached_modified_gradients') and
@@ -2194,7 +2206,7 @@ class GradProbe:
                             param.data[mask] = 0
                 else:
                     if verbose:
-                        if tune_threshold_on_fail and gradient_threshold > 0:
+                        if tune_threshold_on_fail and _is_nonzero_threshold(gradient_threshold):
                             get_logger().info(f"  ✗ Threshold tuning unsuccessful")
                         get_logger().info(f"  Stopping - reverting to previous iteration")
                     # Revert to previous best state
