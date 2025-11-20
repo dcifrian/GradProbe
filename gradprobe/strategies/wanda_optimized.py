@@ -779,7 +779,7 @@ class WANDAPruningOptimized(PruningStrategy):
         device = next(model.parameters()).device
 
         batch_count = 0
-        with torch.no_grad():
+        with torch.inference_mode():
             for batch in self.dataloader:
                 if batch_count >= self.num_batches:
                     break
