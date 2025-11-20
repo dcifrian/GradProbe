@@ -28,6 +28,22 @@ def _is_nonzero_threshold(gradient_threshold: Union[float, List[float], Dict[str
         return float(gradient_threshold) > 0
 
 
+def _scale_threshold(gradient_threshold: Union[float, List[float], Dict[str, float], Tuple[str, float]], factor: float) -> Union[float, List[float], Dict[str, float], Tuple[str, float]]:
+    """Scale gradient_threshold by a factor, handling all types."""
+    if isinstance(gradient_threshold, tuple) and len(gradient_threshold) == 2 and gradient_threshold[0] == "adaptive":
+        # Scale the base threshold in adaptive mode
+        return ("adaptive", gradient_threshold[1] * factor)
+    elif isinstance(gradient_threshold, dict):
+        # Scale each layer's threshold
+        return {name: thresh * factor for name, thresh in gradient_threshold.items()}
+    elif isinstance(gradient_threshold, (list, tuple)):
+        # Scale each threshold in the list
+        return [thresh * factor for thresh in gradient_threshold]
+    else:
+        # Single threshold
+        return float(gradient_threshold) * factor
+
+
 def compute_adaptive_gradient_thresholds(
     model: nn.Module,
     base_threshold: float,
@@ -1499,11 +1515,16 @@ class GradProbe:
             get_logger().info(f"    Using two-step tuning (re-pruning both step {prev_step_data['sparsity']:.0%} and {current_sparsity:.0%})")
 
         # Try both directions
-        lower_threshold = base_threshold * 0.9
-        higher_threshold = base_threshold * 1.1
+        lower_threshold = _scale_threshold(base_threshold, 0.9)
+        higher_threshold = _scale_threshold(base_threshold, 1.1)
 
         if verbose:
-            get_logger().debug(f"    Testing threshold {lower_threshold:.2f} and {higher_threshold:.2f}")
+            if isinstance(base_threshold, tuple) and base_threshold[0] == "adaptive":
+                get_logger().debug(f"    Testing threshold (adaptive) {lower_threshold[1]:.2f} and {higher_threshold[1]:.2f}")
+            elif isinstance(base_threshold, (dict, list)):
+                get_logger().debug(f"    Testing threshold scaled by 0.9 and 1.1")
+            else:
+                get_logger().debug(f"    Testing threshold {lower_threshold:.2f} and {higher_threshold:.2f}")
 
         # Test lower threshold
         if use_two_step:
@@ -1569,8 +1590,17 @@ class GradProbe:
         higher_drop = initial_accuracy - higher_result['accuracy']
 
         if verbose:
-            get_logger().info(f"    Lower threshold ({lower_threshold:.2f}): sparsity={lower_result['sparsity']:.2%}, accuracy={lower_result['accuracy']:.2f}%, drop={lower_drop:.2f}%")
-            get_logger().info(f"    Higher threshold ({higher_threshold:.2f}): sparsity={higher_result['sparsity']:.2%}, accuracy={higher_result['accuracy']:.2f}%, drop={higher_drop:.2f}%")
+            if isinstance(lower_threshold, tuple) and lower_threshold[0] == "adaptive":
+                lower_str = f"{lower_threshold[1]:.2f}"
+                higher_str = f"{higher_threshold[1]:.2f}"
+            elif isinstance(lower_threshold, (dict, list)):
+                lower_str = "0.9x"
+                higher_str = "1.1x"
+            else:
+                lower_str = f"{lower_threshold:.2f}"
+                higher_str = f"{higher_threshold:.2f}"
+            get_logger().info(f"    Lower threshold ({lower_str}): sparsity={lower_result['sparsity']:.2%}, accuracy={lower_result['accuracy']:.2f}%, drop={lower_drop:.2f}%")
+            get_logger().info(f"    Higher threshold ({higher_str}): sparsity={higher_result['sparsity']:.2%}, accuracy={higher_result['accuracy']:.2f}%, drop={higher_drop:.2f}%")
 
         # Check if either direction meets the requirement
         if lower_drop <= max_accuracy_drop:
@@ -1621,7 +1651,7 @@ class GradProbe:
         # Allow 1% tolerance for small numerical variations
         max_iterations = 20
         for i in range(max_iterations):
-            next_threshold = current_threshold * direction_multiplier
+            next_threshold = _scale_threshold(current_threshold, direction_multiplier)
 
             if use_two_step:
                 next_result = self._apply_threshold_two_steps(
@@ -1653,7 +1683,13 @@ class GradProbe:
             next_drop = initial_accuracy - next_result['accuracy']
 
             if verbose:
-                get_logger().info(f"    Trying threshold {next_threshold:.2f}: sparsity={next_result['sparsity']:.2%}, accuracy={next_result['accuracy']:.2f}%, drop={next_drop:.2f}%")
+                if isinstance(next_threshold, tuple) and next_threshold[0] == "adaptive":
+                    thresh_str = f"{next_threshold[1]:.2f}"
+                elif isinstance(next_threshold, (dict, list)):
+                    thresh_str = "scaled"
+                else:
+                    thresh_str = f"{next_threshold:.2f}"
+                get_logger().info(f"    Trying threshold {thresh_str}: sparsity={next_result['sparsity']:.2%}, accuracy={next_result['accuracy']:.2f}%, drop={next_drop:.2f}%")
 
             # Allow up to 1% degradation relative to current accuracy to handle numerical noise
             tolerance = abs(previous_accuracy) * 0.01
