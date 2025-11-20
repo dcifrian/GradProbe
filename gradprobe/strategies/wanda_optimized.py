@@ -455,23 +455,23 @@ class WANDAPruningOptimized(PruningStrategy):
                                 needed_count = int(sparsity * total_count)
                                 additional_needed = int((needed_count - current_count) * 1.2)  # 20% buffer
 
-                                log_debug(f"=== UPWARD EXPANSION ===")
-                                log_debug(f"Current bin: {current_bin}, high={high:.6f}")
-                                log_debug(f"Actual sparsity: {actual_sparsity*100:.2f}%, target: {sparsity*100:.2f}%")
-                                log_debug(f"Need ~{additional_needed} more elements")
+                                get_logger().debug(f"=== UPWARD EXPANSION ===")
+                                get_logger().debug(f"Current bin: {current_bin}, high={high:.6f}")
+                                get_logger().debug(f"Actual sparsity: {actual_sparsity*100:.2f}%, target: {sparsity*100:.2f}%")
+                                get_logger().debug(f"Need ~{additional_needed} more elements")
 
                                 # Sum histogram bins starting from next bin until we accumulate enough elements
                                 accumulated = 0
                                 target_bin = current_bin + 1
-                                log_debug(f"Starting from bin {target_bin}, counting forward...")
+                                get_logger().debug(f"Starting from bin {target_bin}, counting forward...")
                                 while target_bin < len(histogram) and accumulated < additional_needed:
                                     bin_count = histogram[target_bin].item()
                                     accumulated += bin_count
-                                    log_debug(f"  Bin {target_bin} has {bin_count:.0f} elements, accumulated={accumulated:.0f}")
+                                    get_logger().debug(f"  Bin {target_bin} has {bin_count:.0f} elements, accumulated={accumulated:.0f}")
                                     target_bin += 1
 
                                 # After the loop, target_bin has been incremented one extra time
-                                log_debug(f"After loop: target_bin={target_bin}, accumulated={accumulated}")
+                                get_logger().debug(f"After loop: target_bin={target_bin}, accumulated={accumulated}")
 
                                 # Jump to that bin (or at least +1 bin to make progress)
                                 # target_bin is one more than the last bin we counted
@@ -479,8 +479,8 @@ class WANDAPruningOptimized(PruningStrategy):
                                 # So we use target_bin directly (which is last_counted_bin + 1)
                                 target_bin = max(target_bin, current_bin + 1)
                                 new_high = min(max_val, hist_min + target_bin * bin_width_coarse)
-                                log_debug(f"Final target_bin: {target_bin}, new_high={new_high:.6f}")
-                                log_debug(f"========================")
+                                get_logger().debug(f"Final target_bin: {target_bin}, new_high={new_high:.6f}")
+                                get_logger().debug(f"========================")
                                 log_memory(f"Jumping from bin {current_bin} to bin {target_bin-1} (need ~{additional_needed} more elements, accumulated {accumulated})")
                             else:
                                 # Outside histogram range - expand to max_val
@@ -505,31 +505,31 @@ class WANDAPruningOptimized(PruningStrategy):
                                 needed_count = int(sparsity * total_count)
                                 reduction_needed = int((current_count - needed_count) * 1.2)  # 20% buffer
 
-                                log_debug(f"=== DOWNWARD EXPANSION ===")
-                                log_debug(f"Current bin: {current_bin}, low={low:.6f}")
-                                log_debug(f"Actual sparsity: {actual_sparsity*100:.2f}%, target: {sparsity*100:.2f}%")
-                                log_debug(f"Need ~{reduction_needed} fewer elements")
+                                get_logger().debug(f"=== DOWNWARD EXPANSION ===")
+                                get_logger().debug(f"Current bin: {current_bin}, low={low:.6f}")
+                                get_logger().debug(f"Actual sparsity: {actual_sparsity*100:.2f}%, target: {sparsity*100:.2f}%")
+                                get_logger().debug(f"Need ~{reduction_needed} fewer elements")
 
                                 # Sum histogram bins starting from previous bin (backwards) until we accumulate enough elements
                                 accumulated = 0
                                 target_bin = current_bin - 1
-                                log_debug(f"Starting from bin {target_bin}, counting backwards...")
+                                get_logger().debug(f"Starting from bin {target_bin}, counting backwards...")
                                 while target_bin >= 0 and accumulated < reduction_needed:
                                     bin_count = histogram[target_bin].item()
                                     accumulated += bin_count
-                                    log_debug(f"  Bin {target_bin} has {bin_count:.0f} elements, accumulated={accumulated:.0f}")
+                                    get_logger().debug(f"  Bin {target_bin} has {bin_count:.0f} elements, accumulated={accumulated:.0f}")
                                     target_bin -= 1
 
                                 # After the loop, target_bin has been decremented one extra time
                                 # target_bin is now the bin BEFORE the last one we counted
                                 # We want to jump to the last bin we counted
-                                log_debug(f"After loop: target_bin={target_bin}, accumulated={accumulated}")
+                                get_logger().debug(f"After loop: target_bin={target_bin}, accumulated={accumulated}")
 
                                 # Clamp and adjust
                                 # If current_bin is 0, we can't go lower
                                 if current_bin == 0:
                                     target_bin = 0
-                                    log_debug(f"Already at bin 0, cannot expand downward!")
+                                    get_logger().debug(f"Already at bin 0, cannot expand downward!")
                                 else:
                                     # target_bin is now one less than the bin we want (because loop decremented it)
                                     # Increment it back
@@ -539,8 +539,8 @@ class WANDAPruningOptimized(PruningStrategy):
                                     target_bin = min(target_bin, current_bin - 1)
 
                                 new_low = max(min_val, hist_min + target_bin * bin_width_coarse)
-                                log_debug(f"Final target_bin: {target_bin}, new_low={new_low:.6f}")
-                                log_debug(f"========================")
+                                get_logger().debug(f"Final target_bin: {target_bin}, new_low={new_low:.6f}")
+                                get_logger().debug(f"========================")
                                 log_memory(f"Jumping from bin {current_bin} to bin {target_bin} (need ~{reduction_needed} fewer elements, accumulated {accumulated})")
                             else:
                                 # Outside histogram range - expand to min_val
