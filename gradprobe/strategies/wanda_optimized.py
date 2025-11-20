@@ -248,33 +248,52 @@ class WANDAPruningOptimized(PruningStrategy):
             cumsum_fine = histogram_fine.cumsum(0)
             fine_bin_idx = (cumsum_fine >= fine_target).nonzero(as_tuple=True)[0]
 
-            if len(fine_bin_idx) == 0:
-                raise RuntimeError(f"Fine histogram failed: cumsum never reached fine_target. "
-                                 f"fine_cumsum[-1]={cumsum_fine[-1].item():.0f}, fine_target={fine_target:.0f}, "
-                                 f"values_below={values_below_target_bin:.0f}, global_target={target_count}")
-
-            fine_bin_idx = fine_bin_idx[0].item()
             bin_width_fine = (fine_max - fine_min) / num_bins_fine
-            initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
 
-            # Set binary search bounds based on element count, not bin count
-            # Allow ±1% slack in sparsity (e.g., 9-11% for 10% target)
-            # This adapts to density - tight in dense regions, wider in sparse regions
-            slack_percent = 0.01
-            lower_target_fine = fine_target * (1 - slack_percent)
-            upper_target_fine = fine_target * (1 + slack_percent)
+            if len(fine_bin_idx) == 0:
+                # Fine histogram doesn't reach target - distribution has shifted since caching
+                # Estimate upper bound and let binary search handle it
+                values_in_fine_range = cumsum_fine[-1].item()
+                values_needed = fine_target - values_in_fine_range
 
-            # Find bins that bracket these element counts
-            lower_bin_idx = (cumsum_fine >= lower_target_fine).nonzero(as_tuple=True)[0]
-            upper_bin_idx = (cumsum_fine >= upper_target_fine).nonzero(as_tuple=True)[0]
+                # Estimate how far beyond the current bin range we need to go
+                # Formula: end + 2 * width * (needed / in_range) - overshoots to ensure we bracket the target
+                if values_in_fine_range > 0:
+                    expansion_factor = 2.0 * values_needed / values_in_fine_range
+                else:
+                    expansion_factor = 1.0  # Fallback if no values in range
 
-            lower_bin = lower_bin_idx[0].item() if len(lower_bin_idx) > 0 else 0
-            upper_bin = upper_bin_idx[0].item() if len(upper_bin_idx) > 0 else num_bins_fine - 1
+                estimated_max = fine_max + expansion_factor * (fine_max - fine_min)
 
-            search_min = max(min_val, fine_min + lower_bin * bin_width_fine)
-            search_max = min(max_val, fine_min + (upper_bin + 1) * bin_width_fine)
+                log_memory(f"Pass 2: Fine histogram undershot target (had {values_in_fine_range:.0f}/{fine_target:.0f}). "
+                          f"Distribution shifted since caching. Expanding search range to {estimated_max:.6f} for binary search.")
 
-            log_memory(f"Pass 2: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}, search range: bins [{lower_bin}, {upper_bin}] (±{slack_percent*100:.0f}% elements)")
+                # Use the end of the fine range as initial threshold
+                initial_threshold = fine_max
+                search_min = fine_min
+                search_max = min(max_val, estimated_max)
+            else:
+                fine_bin_idx = fine_bin_idx[0].item()
+                initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
+
+                # Set binary search bounds based on element count, not bin count
+                # Allow ±1% slack in sparsity (e.g., 9-11% for 10% target)
+                # This adapts to density - tight in dense regions, wider in sparse regions
+                slack_percent = 0.01
+                lower_target_fine = fine_target * (1 - slack_percent)
+                upper_target_fine = fine_target * (1 + slack_percent)
+
+                # Find bins that bracket these element counts
+                lower_bin_idx = (cumsum_fine >= lower_target_fine).nonzero(as_tuple=True)[0]
+                upper_bin_idx = (cumsum_fine >= upper_target_fine).nonzero(as_tuple=True)[0]
+
+                lower_bin = lower_bin_idx[0].item() if len(lower_bin_idx) > 0 else 0
+                upper_bin = upper_bin_idx[0].item() if len(upper_bin_idx) > 0 else num_bins_fine - 1
+
+                search_min = max(min_val, fine_min + lower_bin * bin_width_fine)
+                search_max = min(max_val, fine_min + (upper_bin + 1) * bin_width_fine)
+
+                log_memory(f"Pass 2: threshold from bin {fine_bin_idx}/{num_bins_fine} = {initial_threshold:.6f}, search range: bins [{lower_bin}, {upper_bin}] (±{slack_percent*100:.0f}% elements)")
         else:
             # Low density bin - but still use fine histogram for better accuracy
             # Build fine histogram
@@ -302,15 +321,30 @@ class WANDAPruningOptimized(PruningStrategy):
             cumsum_fine = histogram_fine.cumsum(0)
             fine_bin_idx = (cumsum_fine >= fine_target).nonzero(as_tuple=True)[0]
 
+            bin_width_fine = (fine_max - fine_min) / num_bins_fine
+
             if len(fine_bin_idx) == 0:
-                # Fallback to coarse estimate
-                initial_threshold = hist_min + (coarse_bin_idx + 0.5) * bin_width_coarse
-                search_min = min_val
-                search_max = max_val
-                log_memory(f"Pass 2: Fine histogram failed, using coarse estimate with wide search")
+                # Fine histogram doesn't reach target - distribution has shifted since caching
+                # Estimate upper bound and let binary search handle it
+                values_in_fine_range = cumsum_fine[-1].item()
+                values_needed = fine_target - values_in_fine_range
+
+                # Estimate how far beyond the current bin range we need to go
+                if values_in_fine_range > 0:
+                    expansion_factor = 2.0 * values_needed / values_in_fine_range
+                else:
+                    expansion_factor = 1.0
+
+                estimated_max = fine_max + expansion_factor * (fine_max - fine_min)
+
+                log_memory(f"Pass 2: Fine histogram undershot target (had {values_in_fine_range:.0f}/{fine_target:.0f}). "
+                          f"Distribution shifted since caching. Expanding search range to {estimated_max:.6f} for binary search.")
+
+                initial_threshold = fine_max
+                search_min = fine_min
+                search_max = min(max_val, estimated_max)
             else:
                 fine_bin_idx = fine_bin_idx[0].item()
-                bin_width_fine = (fine_max - fine_min) / num_bins_fine
                 initial_threshold = fine_min + (fine_bin_idx + 0.5) * bin_width_fine
 
                 # Set tight bounds based on element count
