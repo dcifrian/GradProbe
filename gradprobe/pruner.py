@@ -11,6 +11,7 @@ import torch.nn as nn
 from copy import deepcopy
 import gc
 import math
+import os
 
 from .strategies.base import PruningStrategy
 from .logger import get_logger
@@ -1945,7 +1946,10 @@ class GradProbe:
         compare_baseline: bool = False,
         tune_threshold_on_fail: bool = True,
         experimental_tune_both_steps: bool = False,
-        layer_order: str = "reverse"
+        layer_order: str = "reverse",
+        save_dir: str = None,
+        model_name_prefix: str = "pruned",
+        tokenizer = None
     ) -> Dict:
         """
         Iteratively increase pruning until accuracy drops beyond threshold.
@@ -2044,7 +2048,7 @@ class GradProbe:
         # Track best tuned checkpoint (from threshold tuning, typically both accurate and sparse)
         best_tuned_masks = None
         best_tuned_sparsity = 0.0
-        best_tuned_accuracy = initial_accuracy
+        best_tuned_accuracy = -float('inf')  # Initialize to worst possible for comparison
 
         # Track sparsity progress for stop condition
         previous_sparsity = 0.0
@@ -2369,5 +2373,65 @@ class GradProbe:
             get_logger().info("="*70)
             if best_masks is not None:
                 self._print_pruning_statistics(best_masks)
+
+        # Save checkpoints if save_dir is provided
+        if save_dir is not None and best_masks is not None:
+            def format_for_filename(num):
+                """Format number by replacing '.' with '_'"""
+                return f"{num:.2f}".replace('.', '_')
+
+            if verbose:
+                get_logger().info("\n" + "="*70)
+                get_logger().info("SAVING PRUNED MODELS")
+                get_logger().info("="*70)
+
+            # Save most sparse checkpoint (already applied to model)
+            final_metric = eval_fn(self.model)
+            sparsity_str = format_for_filename(best_sparsity * 100)
+            metric_str = format_for_filename(abs(final_metric))
+            sparse_dir = os.path.join(save_dir, f"{model_name_prefix}_sparse_s{sparsity_str}_p{metric_str}")
+            os.makedirs(sparse_dir, exist_ok=True)
+            self.model.save_pretrained(sparse_dir)
+            if tokenizer is not None:
+                tokenizer.save_pretrained(sparse_dir)
+            results['sparse_checkpoint_path'] = sparse_dir
+            if verbose:
+                get_logger().info(f"Most sparse checkpoint saved to: {sparse_dir}")
+                get_logger().info(f"  Sparsity: {best_sparsity:.2%}, Metric: {abs(final_metric):.2f}")
+
+            # Save best tuned checkpoint if different
+            if (best_tuned_masks is not None and
+                (best_tuned_sparsity != best_sparsity or abs(best_tuned_accuracy - best_accuracy) > 0.01)):
+                # Apply best tuned masks
+                for name, param in self.model.named_parameters():
+                    if name in original_state_backup:
+                        param.data.copy_(original_state_backup[name])
+                    if name in best_tuned_masks:
+                        mask = self._move_mask_to_param_device(best_tuned_masks[name], param)
+                        param.data[mask] = 0
+
+                tuned_metric = eval_fn(self.model)
+                sparsity_str = format_for_filename(best_tuned_sparsity * 100)
+                metric_str = format_for_filename(abs(tuned_metric))
+                tuned_dir = os.path.join(save_dir, f"{model_name_prefix}_tuned_s{sparsity_str}_p{metric_str}")
+                os.makedirs(tuned_dir, exist_ok=True)
+                self.model.save_pretrained(tuned_dir)
+                if tokenizer is not None:
+                    tokenizer.save_pretrained(tuned_dir)
+                results['tuned_checkpoint_path'] = tuned_dir
+                if verbose:
+                    get_logger().info(f"Best tuned checkpoint saved to: {tuned_dir}")
+                    get_logger().info(f"  Sparsity: {best_tuned_sparsity:.2%}, Metric: {abs(tuned_metric):.2f}")
+
+                # Restore most sparse checkpoint to model
+                for name, param in self.model.named_parameters():
+                    if name in original_state_backup:
+                        param.data.copy_(original_state_backup[name])
+                    if name in best_masks:
+                        mask = self._move_mask_to_param_device(best_masks[name], param)
+                        param.data[mask] = 0
+
+            if verbose:
+                get_logger().info("="*70)
 
         return results

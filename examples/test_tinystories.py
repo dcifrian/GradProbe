@@ -209,7 +209,10 @@ results_wanda = pruner_wanda.iterative_prune(
     verbose=True,
     compare_baseline=True,  # Compare with WANDA-only (no gradient filtering)
     experimental_tune_both_steps=True,  # EXPERIMENTAL: Re-prune both steps together
-    layer_order="size"  # NEW: Prune largest layers first
+    layer_order="size",  # NEW: Prune largest layers first
+    save_dir="pruned_models",
+    model_name_prefix="tinystories_wanda",
+    tokenizer=tokenizer
 )
 
 logger.info("\n" + "="*70)
@@ -284,82 +287,46 @@ generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
 logger.info(generated_text)
 logger.info("="*70)
 
-# Save the pruned models
-logger.info("\n" + "="*70)
-logger.info("SAVING PRUNED MODELS")
-logger.info("="*70)
+# Test generation with best tuned checkpoint if it was saved
+if 'tuned_checkpoint_path' in results_wanda:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# Helper function to format numbers for filenames
-def format_for_filename(num):
-    """Format number by replacing '.' with '_'"""
-    return f"{num:.2f}".replace('.', '_')
+    logger.info("\n" + "="*70)
+    logger.info("TESTING GENERATION - BEST TUNED CHECKPOINT")
+    logger.info("="*70)
 
-# Save most sparse checkpoint
-final_sparsity = results_wanda['final_sparsity']
-final_perplexity = eval_perplexity(model)
-sparsity_str = format_for_filename(final_sparsity * 100)
-perplexity_str = format_for_filename(final_perplexity)
-output_dir = f"pruned_models/tinystories_wanda_sparse_s{sparsity_str}_p{perplexity_str}"
-os.makedirs(output_dir, exist_ok=True)
-model.save_pretrained(output_dir)
-tokenizer.save_pretrained(output_dir)
-logger.info(f"Most sparse checkpoint saved to: {output_dir}")
-logger.info(f"  Sparsity: {final_sparsity:.2%}, Perplexity: {final_perplexity:.2f}")
+    # Load best tuned checkpoint
+    tuned_model = AutoModelForCausalLM.from_pretrained(
+        results_wanda['tuned_checkpoint_path'],
+        torch_dtype=torch.float16,
+        device_map="auto"
+    )
+    tuned_tokenizer = AutoTokenizer.from_pretrained(results_wanda['tuned_checkpoint_path'])
 
-# Save best tuned checkpoint if different (from threshold tuning)
-if 'best_tuned_masks' in results_wanda and results_wanda['best_tuned_masks'] is not None:
     best_tuned_sparsity = results_wanda['best_tuned_sparsity']
-    best_tuned_accuracy = results_wanda['best_tuned_accuracy']
+    tuned_perplexity = eval_perplexity(tuned_model)
+    logger.info(f"Sparsity: {best_tuned_sparsity:.2%}")
+    logger.info(f"Perplexity: {tuned_perplexity:.2f}")
+    logger.info("Prompt: Once upon a time")
+    logger.info("-" * 70)
 
-    # Check if it's different from the final checkpoint
-    if best_tuned_sparsity != final_sparsity or abs(best_tuned_accuracy - results_wanda['final_accuracy']) > 0.01:
-        # Apply best tuned masks
-        model.load_state_dict(saved_state)
-        for name, param in model.named_parameters():
-            if name in results_wanda['best_tuned_masks']:
-                mask = results_wanda['best_tuned_masks'][name].to(param.device)
-                param.data[mask] = 0
+    tuned_model.eval()
+    with torch.no_grad():
+        input_ids = tuned_tokenizer("Once upon a time", return_tensors="pt").input_ids.to(device)
+        output_tokens = tuned_model.generate(
+            input_ids,
+            max_length=100,
+            num_return_sequences=1,
+            do_sample=True,
+            temperature=0.8,
+            top_p=0.9,
+            pad_token_id=tuned_tokenizer.eos_token_id
+        )
+    generated_text = tuned_tokenizer.decode(output_tokens[0], skip_special_tokens=True)
+    logger.info(generated_text)
+    logger.info("="*70)
 
-        best_perplexity = eval_perplexity(model)
-        sparsity_str = format_for_filename(best_tuned_sparsity * 100)
-        perplexity_str = format_for_filename(best_perplexity)
-        output_dir = f"pruned_models/tinystories_wanda_tuned_s{sparsity_str}_p{perplexity_str}"
-        os.makedirs(output_dir, exist_ok=True)
-        model.save_pretrained(output_dir)
-        tokenizer.save_pretrained(output_dir)
-        logger.info(f"Best tuned checkpoint saved to: {output_dir}")
-        logger.info(f"  Sparsity: {best_tuned_sparsity:.2%}, Perplexity: {best_perplexity:.2f}")
-
-        # Test generation with best tuned checkpoint
-        logger.info("\n" + "="*70)
-        logger.info("TESTING GENERATION - BEST TUNED CHECKPOINT")
-        logger.info("="*70)
-        logger.info(f"Sparsity: {best_tuned_sparsity:.2%}")
-        logger.info(f"Perplexity: {best_perplexity:.2f}")
-        logger.info("Prompt: Once upon a time")
-        logger.info("-" * 70)
-
-        model.eval()
-        with torch.no_grad():
-            input_ids = tokenizer("Once upon a time", return_tensors="pt").input_ids.to(device)
-            output_tokens = model.generate(
-                input_ids,
-                max_length=100,
-                num_return_sequences=1,
-                do_sample=True,
-                temperature=0.8,
-                top_p=0.9,
-                pad_token_id=tokenizer.eos_token_id
-            )
-        generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
-        logger.info(generated_text)
-        logger.info("="*70)
-
-        # Restore most sparse checkpoint to model
-        model.load_state_dict(saved_state)
-        for name, param in model.named_parameters():
-            if name in results_wanda['final_masks']:
-                mask = results_wanda['final_masks'][name].to(param.device)
-                param.data[mask] = 0
-
-logger.info("="*70)
+    # Free memory
+    del tuned_model
+    del tuned_tokenizer
+    torch.cuda.empty_cache()
