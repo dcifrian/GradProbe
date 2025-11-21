@@ -1649,6 +1649,10 @@ class GradProbe:
         # Track best result that meets requirements (may be None initially)
         best_valid_result = best_result if (initial_accuracy - best_result['accuracy']) <= max_accuracy_drop else None
 
+        # Track best accuracy result (regardless of whether it meets sparsity requirement)
+        best_accuracy_result = best_result.copy()
+        best_accuracy_result['threshold'] = current_threshold
+
         # Keep going in that direction as long as accuracy doesn't degrade significantly
         # Allow 1% tolerance for small numerical variations
         max_iterations = 20
@@ -1703,6 +1707,11 @@ class GradProbe:
                 current_threshold = next_threshold
                 previous_accuracy = next_result['accuracy']
 
+                # Track best accuracy result (best = highest accuracy value = least negative = lowest perplexity)
+                if next_result['accuracy'] > best_accuracy_result['accuracy']:
+                    best_accuracy_result = next_result.copy()
+                    best_accuracy_result['threshold'] = next_threshold
+
                 # Track this as best valid result if it meets requirements
                 # Prefer highest sparsity among valid results
                 if next_drop <= max_accuracy_drop:
@@ -1718,6 +1727,9 @@ class GradProbe:
                 break
 
         # Return the best result that meets requirements (or None if we never found one)
+        # Also include the best accuracy result in the dict (for tracking most accurate checkpoint)
+        if best_valid_result is not None:
+            best_valid_result['best_accuracy_result'] = best_accuracy_result
         return best_valid_result
 
     def _apply_threshold_two_steps(
@@ -2262,11 +2274,13 @@ class GradProbe:
                     best_sparsity = tuned_result['sparsity']
                     best_accuracy = tuned_result['accuracy']
 
-                    # Track best tuned checkpoint (from threshold tuning)
-                    if tuned_result['accuracy'] > best_tuned_accuracy:
-                        best_tuned_masks = {name: mask.clone() for name, mask in tuned_result['masks'].items()}
-                        best_tuned_sparsity = tuned_result['sparsity']
-                        best_tuned_accuracy = tuned_result['accuracy']
+                    # Track best tuned checkpoint (from threshold tuning - use best accuracy result)
+                    if 'best_accuracy_result' in tuned_result:
+                        best_acc_result = tuned_result['best_accuracy_result']
+                        if best_acc_result['accuracy'] > best_tuned_accuracy:
+                            best_tuned_masks = {name: mask.clone() for name, mask in best_acc_result['masks'].items()}
+                            best_tuned_sparsity = best_acc_result['sparsity']
+                            best_tuned_accuracy = best_acc_result['accuracy']
 
                     # Apply the tuned masks
                     for name, param in self.model.named_parameters():
