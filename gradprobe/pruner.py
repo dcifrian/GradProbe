@@ -2040,10 +2040,10 @@ class GradProbe:
         best_sparsity = 0.0
         best_accuracy = initial_accuracy
 
-        # Track best accuracy checkpoint (lowest perplexity) separately
-        best_acc_masks = None
-        best_acc_sparsity = 0.0
-        best_acc_accuracy = initial_accuracy
+        # Track best tuned checkpoint (from threshold tuning, typically both accurate and sparse)
+        best_tuned_masks = None
+        best_tuned_sparsity = 0.0
+        best_tuned_accuracy = initial_accuracy
 
         # Track sparsity progress for stop condition
         previous_sparsity = 0.0
@@ -2113,12 +2113,6 @@ class GradProbe:
 
             results['sparsity_history'].append(actual_sparsity)
             results['accuracy_history'].append(accuracy)
-
-            # Track best accuracy checkpoint (lowest perplexity)
-            if accuracy > best_acc_accuracy:
-                best_acc_masks = {name: mask.clone() for name, mask in cumulative_masks.items()}
-                best_acc_sparsity = actual_sparsity
-                best_acc_accuracy = accuracy
 
             if verbose:
                 get_logger().info(f"  Target sparsity: {current_sparsity:.2%}")
@@ -2263,11 +2257,11 @@ class GradProbe:
                     best_sparsity = tuned_result['sparsity']
                     best_accuracy = tuned_result['accuracy']
 
-                    # Track best accuracy checkpoint
-                    if tuned_result['accuracy'] > best_acc_accuracy:
-                        best_acc_masks = {name: mask.clone() for name, mask in tuned_result['masks'].items()}
-                        best_acc_sparsity = tuned_result['sparsity']
-                        best_acc_accuracy = tuned_result['accuracy']
+                    # Track best tuned checkpoint (from threshold tuning)
+                    if tuned_result['accuracy'] > best_tuned_accuracy:
+                        best_tuned_masks = {name: mask.clone() for name, mask in tuned_result['masks'].items()}
+                        best_tuned_sparsity = tuned_result['sparsity']
+                        best_tuned_accuracy = tuned_result['accuracy']
 
                     # Apply the tuned masks
                     for name, param in self.model.named_parameters():
@@ -2352,11 +2346,11 @@ class GradProbe:
                 if name in original_state_backup:
                     param.data.copy_(original_state_backup[name])
 
-        # Store best accuracy checkpoint separately
-        if best_acc_masks is not None:
-            results['best_acc_masks'] = best_acc_masks
-            results['best_acc_sparsity'] = best_acc_sparsity
-            results['best_acc_accuracy'] = best_acc_accuracy
+        # Store best tuned checkpoint separately (from threshold tuning)
+        if best_tuned_masks is not None:
+            results['best_tuned_masks'] = best_tuned_masks
+            results['best_tuned_sparsity'] = best_tuned_sparsity
+            results['best_tuned_accuracy'] = best_tuned_accuracy
 
         if verbose:
             get_logger().info("\n" + "="*70)
@@ -2366,11 +2360,11 @@ class GradProbe:
             get_logger().info(f"Final accuracy: {best_accuracy:.2f}%")
             get_logger().info(f"Accuracy drop: {initial_accuracy - best_accuracy:.2f}%")
             get_logger().info(f"Final sparsity: {best_sparsity:.2%}")
-            if best_acc_masks is not None and (best_acc_sparsity != best_sparsity or best_acc_accuracy != best_accuracy):
+            if best_tuned_masks is not None and (best_tuned_sparsity != best_sparsity or abs(best_tuned_accuracy - best_accuracy) > 0.01):
                 get_logger().info("-" * 70)
-                get_logger().info("BEST ACCURACY CHECKPOINT (for comparison)")
-                get_logger().info(f"Best accuracy: {best_acc_accuracy:.2f}%")
-                get_logger().info(f"Sparsity at best accuracy: {best_acc_sparsity:.2%}")
+                get_logger().info("BEST TUNED CHECKPOINT (from threshold tuning)")
+                get_logger().info(f"Best tuned accuracy: {best_tuned_accuracy:.2f}%")
+                get_logger().info(f"Sparsity at best tuned: {best_tuned_sparsity:.2%}")
             get_logger().info("="*70)
             if best_masks is not None:
                 self._print_pruning_statistics(best_masks)

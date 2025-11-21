@@ -306,29 +306,54 @@ tokenizer.save_pretrained(output_dir)
 logger.info(f"Most sparse checkpoint saved to: {output_dir}")
 logger.info(f"  Sparsity: {final_sparsity:.2%}, Perplexity: {final_perplexity:.2f}")
 
-# Save best accuracy checkpoint if different
-if 'best_acc_masks' in results_wanda and results_wanda['best_acc_masks'] is not None:
-    best_acc_sparsity = results_wanda['best_acc_sparsity']
-    best_acc_accuracy = results_wanda['best_acc_accuracy']
+# Save best tuned checkpoint if different (from threshold tuning)
+if 'best_tuned_masks' in results_wanda and results_wanda['best_tuned_masks'] is not None:
+    best_tuned_sparsity = results_wanda['best_tuned_sparsity']
+    best_tuned_accuracy = results_wanda['best_tuned_accuracy']
 
     # Check if it's different from the final checkpoint
-    if best_acc_sparsity != final_sparsity or abs(best_acc_accuracy - results_wanda['final_accuracy']) > 0.01:
-        # Apply best accuracy masks
+    if best_tuned_sparsity != final_sparsity or abs(best_tuned_accuracy - results_wanda['final_accuracy']) > 0.01:
+        # Apply best tuned masks
         model.load_state_dict(saved_state)
         for name, param in model.named_parameters():
-            if name in results_wanda['best_acc_masks']:
-                mask = results_wanda['best_acc_masks'][name].to(param.device)
+            if name in results_wanda['best_tuned_masks']:
+                mask = results_wanda['best_tuned_masks'][name].to(param.device)
                 param.data[mask] = 0
 
         best_perplexity = eval_perplexity(model)
-        sparsity_str = format_for_filename(best_acc_sparsity * 100)
+        sparsity_str = format_for_filename(best_tuned_sparsity * 100)
         perplexity_str = format_for_filename(best_perplexity)
-        output_dir = f"pruned_models/tinystories_wanda_bestacc_s{sparsity_str}_p{perplexity_str}"
+        output_dir = f"pruned_models/tinystories_wanda_tuned_s{sparsity_str}_p{perplexity_str}"
         os.makedirs(output_dir, exist_ok=True)
         model.save_pretrained(output_dir)
         tokenizer.save_pretrained(output_dir)
-        logger.info(f"Best accuracy checkpoint saved to: {output_dir}")
-        logger.info(f"  Sparsity: {best_acc_sparsity:.2%}, Perplexity: {best_perplexity:.2f}")
+        logger.info(f"Best tuned checkpoint saved to: {output_dir}")
+        logger.info(f"  Sparsity: {best_tuned_sparsity:.2%}, Perplexity: {best_perplexity:.2f}")
+
+        # Test generation with best tuned checkpoint
+        logger.info("\n" + "="*70)
+        logger.info("TESTING GENERATION - BEST TUNED CHECKPOINT")
+        logger.info("="*70)
+        logger.info(f"Sparsity: {best_tuned_sparsity:.2%}")
+        logger.info(f"Perplexity: {best_perplexity:.2f}")
+        logger.info("Prompt: Once upon a time")
+        logger.info("-" * 70)
+
+        model.eval()
+        with torch.no_grad():
+            input_ids = tokenizer("Once upon a time", return_tensors="pt").input_ids.to(device)
+            output_tokens = model.generate(
+                input_ids,
+                max_length=100,
+                num_return_sequences=1,
+                do_sample=True,
+                temperature=0.8,
+                top_p=0.9,
+                pad_token_id=tokenizer.eos_token_id
+            )
+        generated_text = tokenizer.decode(output_tokens[0], skip_special_tokens=True)
+        logger.info(generated_text)
+        logger.info("="*70)
 
         # Restore most sparse checkpoint to model
         model.load_state_dict(saved_state)
