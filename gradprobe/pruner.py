@@ -1482,7 +1482,8 @@ class GradProbe:
         layerwise: bool,
         verbose: bool,
         prev_step_data: Dict = None,
-        layer_order: str = "reverse"
+        layer_order: str = "reverse",
+        increment = 0.2
     ) -> Dict:
         """
         Fine-tune gradient threshold when accuracy target is missed.
@@ -1495,7 +1496,7 @@ class GradProbe:
         This explores different pruning paths since changing the threshold at step N-1
         creates a different model state going into step N.
 
-        Tries threshold * 0.9 and * 1.1 to find which direction improves accuracy,
+        Tries threshold * 1-increment and * 1+increment to find which direction improves accuracy,
         then continues in that direction until results stop improving.
 
         Args:
@@ -1515,14 +1516,14 @@ class GradProbe:
             get_logger().info(f"    Using two-step tuning (re-pruning both step {prev_step_data['sparsity']:.0%} and {current_sparsity:.0%})")
 
         # Try both directions
-        lower_threshold = _scale_threshold(base_threshold, 0.9)
-        higher_threshold = _scale_threshold(base_threshold, 1.1)
+        lower_threshold = _scale_threshold(base_threshold, 1-increment)
+        higher_threshold = _scale_threshold(base_threshold, 1+increment)
 
         if verbose:
             if isinstance(base_threshold, tuple) and base_threshold[0] == "adaptive":
                 get_logger().debug(f"    Testing threshold (adaptive) {lower_threshold[1]:.2f} and {higher_threshold[1]:.2f}")
             elif isinstance(base_threshold, (dict, list)):
-                get_logger().debug(f"    Testing threshold scaled by 0.9 and 1.1")
+                get_logger().debug(f"    Testing threshold scaled by 1-increment and 1+increment")
             else:
                 get_logger().debug(f"    Testing threshold {lower_threshold:.2f} and {higher_threshold:.2f}")
 
@@ -1594,8 +1595,8 @@ class GradProbe:
                 lower_str = f"{lower_threshold[1]:.2f}"
                 higher_str = f"{higher_threshold[1]:.2f}"
             elif isinstance(lower_threshold, (dict, list)):
-                lower_str = "0.9x"
-                higher_str = "1.1x"
+                lower_str = "1-incrementx"
+                higher_str = "1+incrementx"
             else:
                 lower_str = f"{lower_threshold:.2f}"
                 higher_str = f"{higher_threshold:.2f}"
@@ -1606,12 +1607,12 @@ class GradProbe:
         if lower_drop <= max_accuracy_drop:
             best_result = lower_result
             best_result['threshold'] = lower_threshold
-            direction_multiplier = 0.9  # Go lower
+            direction_multiplier = 1-increment  # Go lower
 
         if higher_drop <= max_accuracy_drop and (best_result is None or higher_result['accuracy'] > best_result['accuracy']):
             best_result = higher_result
             best_result['threshold'] = higher_threshold
-            direction_multiplier = 1.1  # Go higher
+            direction_multiplier = 1+increment  # Go higher
 
         # If neither direction meets requirements, still try the better direction
         # (it might improve with further iterations)
@@ -1624,22 +1625,22 @@ class GradProbe:
             if lower_result['accuracy'] >= higher_result['accuracy']:
                 best_result = lower_result
                 best_result['threshold'] = lower_threshold
-                direction_multiplier = 0.9
+                direction_multiplier = 1-increment
                 if verbose:
                     get_logger().debug(f"    Chose lower threshold (better/equal accuracy)")
             else:
                 best_result = higher_result
                 best_result['threshold'] = higher_threshold
-                direction_multiplier = 1.1
+                direction_multiplier = 1+increment
                 if verbose:
                     get_logger().debug(f"    Chose higher threshold (better accuracy)")
 
         # Continue in the better direction
         if verbose:
-            if direction_multiplier == 0.9:
-                get_logger().info(f"    Direction: decreasing threshold (×0.9)")
+            if direction_multiplier == 1-increment:
+                get_logger().info(f"    Direction: decreasing threshold (×{1-increment})")
             else:
-                get_logger().info(f"    Direction: increasing threshold (×1.1)")
+                get_logger().info(f"    Direction: increasing threshold (×{1+increment})")
 
         current_threshold = best_result['threshold']
         previous_accuracy = best_result['accuracy']
